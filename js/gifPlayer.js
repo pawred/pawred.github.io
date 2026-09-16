@@ -882,11 +882,14 @@ function createWorkerGifVideoElement(worker, initData) {
 export async function loadGifPlayer({
   item,
   url,
+  buffer = null,
+  blob = null,
   filename,
   progressOverlay,
   onRetry,
   syncCarouselClones,
   playbackObserver,
+  signal: externalSignal = null,
 }) {
   if (item.dataset.isClone === "true") {
     if (progressOverlay) progressOverlay.style.display = "none";
@@ -900,10 +903,14 @@ export async function loadGifPlayer({
     img.src = url;
 
     img.onload = () => {
+      item.dataset.loaded = "true";
+      delete item.dataset.loading;
       if (progressOverlay) progressOverlay.style.display = "none";
       if (typeof syncCarouselClones === "function") syncCarouselClones(item);
     };
     img.onerror = () => {
+      delete item.dataset.loading;
+      delete item.dataset.loaded;
       if (progressOverlay) progressOverlay.style.display = "flex";
       showMediaUnavailableWarning(progressOverlay, {
         type: "image",
@@ -921,6 +928,16 @@ export async function loadGifPlayer({
   item._abortController = abortController;
   const signal = abortController.signal;
 
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      abortController.abort();
+      return;
+    }
+    externalSignal.addEventListener("abort", () => {
+      try { abortController.abort(); } catch (_) {}
+    }, { once: true });
+  }
+
   const path = item.dataset.path;
   const isImagePath = path && /\.(jpe?g|png|webp|gif|avif)$/i.test(path);
   let posterImg = null;
@@ -935,54 +952,64 @@ export async function loadGifPlayer({
   renderMediaProgress(progressOverlay, "Loading...", null, filename, "", "");
 
   try {
-    const response = await fetch(url, { signal });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const totalSize = parseInt(response.headers.get("content-length") || "0", 10);
     let fullBuffer;
 
-    if (totalSize > 0 && totalSize < 3 * 1024 * 1024) {
-      const ab = await response.arrayBuffer();
-      if (signal.aborted) return;
-      fullBuffer = new Uint8Array(ab);
+    if (!buffer && blob) {
+      buffer = await blob.arrayBuffer();
+    }
+
+    if (buffer) {
+      const u8 = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+      fullBuffer = u8.slice();
     } else {
-      const reader = response.body.getReader();
-      const chunks = [];
-      let downloadedBytes = 0;
-      let lastUiUpdate = 0;
-
-      while (true) {
-        if (signal.aborted) return;
-        const { done, value } = await reader.read();
-        if (signal.aborted) return;
-        if (done) break;
-
-        chunks.push(value);
-        downloadedBytes += value.length;
-
-        const now = Date.now();
-        if (now - lastUiUpdate > 120) {
-          lastUiUpdate = now;
-          if (totalSize > 0) {
-            const percent = Math.min(100, Math.round((downloadedBytes / totalSize) * 100));
-            const loadedStr = formatBytes(downloadedBytes);
-            const totalStr = formatBytes(totalSize);
-            renderMediaProgress(progressOverlay, "Loading...", percent, filename, loadedStr, totalStr);
-          } else {
-            renderMediaProgress(progressOverlay, "Loading...", null, filename, formatBytes(downloadedBytes), "");
-          }
-        }
+      const response = await fetch(url, { signal });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
       }
 
-      if (signal.aborted) return;
+      const totalSize = parseInt(response.headers.get("content-length") || "0", 10);
 
-      fullBuffer = new Uint8Array(downloadedBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        fullBuffer.set(chunk, offset);
-        offset += chunk.length;
+      if (totalSize > 0 && totalSize < 3 * 1024 * 1024) {
+        const ab = await response.arrayBuffer();
+        if (signal.aborted) return;
+        fullBuffer = new Uint8Array(ab);
+      } else {
+        const reader = response.body.getReader();
+        const chunks = [];
+        let downloadedBytes = 0;
+        let lastUiUpdate = 0;
+
+        while (true) {
+          if (signal.aborted) return;
+          const { done, value } = await reader.read();
+          if (signal.aborted) return;
+          if (done) break;
+
+          chunks.push(value);
+          downloadedBytes += value.length;
+
+          const now = Date.now();
+          if (now - lastUiUpdate > 120) {
+            lastUiUpdate = now;
+            if (totalSize > 0) {
+              const percent = Math.min(100, Math.round((downloadedBytes / totalSize) * 100));
+              const loadedStr = formatBytes(downloadedBytes);
+              const totalStr = formatBytes(totalSize);
+              renderMediaProgress(progressOverlay, "Loading...", percent, filename, loadedStr, totalStr);
+            } else {
+              renderMediaProgress(progressOverlay, "Loading...", null, filename, formatBytes(downloadedBytes), "");
+            }
+          }
+        }
+
+        if (signal.aborted) return;
+
+        fullBuffer = new Uint8Array(downloadedBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          fullBuffer.set(chunk, offset);
+          offset += chunk.length;
+        }
       }
     }
 
@@ -1001,10 +1028,14 @@ export async function loadGifPlayer({
       img.src = blobUrl;
 
       img.onload = () => {
+        item.dataset.loaded = "true";
+        delete item.dataset.loading;
         if (progressOverlay) progressOverlay.style.display = "none";
         if (typeof syncCarouselClones === "function") syncCarouselClones(item);
       };
       img.onerror = () => {
+        delete item.dataset.loading;
+        delete item.dataset.loaded;
         if (progressOverlay) progressOverlay.style.display = "flex";
         showMediaUnavailableWarning(progressOverlay, {
           type: "image",
@@ -1116,6 +1147,8 @@ export async function loadGifPlayer({
     item.appendChild(canvas);
     attachCustomVideoPlayer(canvas, item);
 
+    item.dataset.loaded = "true";
+    delete item.dataset.loading;
     if (progressOverlay) progressOverlay.style.display = "none";
     if (typeof syncCarouselClones === "function") syncCarouselClones(item);
     if (playbackObserver) playbackObserver.observe(canvas);
@@ -1143,10 +1176,14 @@ export async function loadGifPlayer({
     fallbackImg.src = url;
 
     fallbackImg.onload = () => {
+      item.dataset.loaded = "true";
+      delete item.dataset.loading;
       if (progressOverlay) progressOverlay.style.display = "none";
       if (typeof syncCarouselClones === "function") syncCarouselClones(item);
     };
     fallbackImg.onerror = () => {
+      delete item.dataset.loading;
+      delete item.dataset.loaded;
       const p = item.dataset.path;
       const isImg = p && /\.(jpe?g|png|webp|gif)$/i.test(p);
       if (isImg && !p.startsWith("http://") && !p.startsWith("https://") && (state.currentSite === "pawchive" || state.currentSite === "kemono")) {
@@ -1156,10 +1193,14 @@ export async function loadGifPlayer({
         thumbImg.src = `${PROXY_URL}/${state.currentSite}/thumbnail/data${p}`;
 
         thumbImg.onload = () => {
+          item.dataset.loaded = "true";
+          delete item.dataset.loading;
           if (progressOverlay) progressOverlay.style.display = "none";
           if (typeof syncCarouselClones === "function") syncCarouselClones(item);
         };
         thumbImg.onerror = () => {
+          delete item.dataset.loading;
+          delete item.dataset.loaded;
           if (progressOverlay) progressOverlay.style.display = "flex";
           showMediaUnavailableWarning(progressOverlay, {
             type: "gif",

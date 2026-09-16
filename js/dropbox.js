@@ -11,15 +11,28 @@ const dropboxInFlight = new Map();
 
 function cleanupContainerMedia(target) {
   if (!target) return;
-  target.querySelectorAll("video, audio").forEach((v) => {
+  if (typeof target._cleanupGif === "function") {
+    try { target._cleanupGif(); } catch (_) {}
+    target._cleanupGif = null;
+  }
+  target.querySelectorAll(".media-item").forEach((slide) => {
+    if (typeof slide._cleanupGif === "function") {
+      try { slide._cleanupGif(); } catch (_) {}
+      slide._cleanupGif = null;
+    }
+  });
+  target.querySelectorAll("video, audio, canvas").forEach((v) => {
     if (typeof v._cleanupCustomPlayer === "function") {
       try { v._cleanupCustomPlayer(); } catch (_) {}
     }
+    if (typeof v._cleanupGif === "function") {
+      try { v._cleanupGif(); } catch (_) {}
+    }
     try {
-      v.pause();
+      if (typeof v.pause === "function") v.pause();
       if (playbackObserver) playbackObserver.unobserve(v);
-      v.removeAttribute("src");
-      v.load();
+      if (typeof v.removeAttribute === "function") v.removeAttribute("src");
+      if (typeof v.load === "function") v.load();
     } catch (_) {}
   });
   target.querySelectorAll("video, audio, img.post-media, canvas.post-media, .video-player-wrapper").forEach((el) => el.remove());
@@ -783,6 +796,7 @@ export async function openDropboxGallery(dropboxUrl, galleryTitle, folderStack =
     const directUrl = `${PROXY_URL}/dropbox?url=${encodeURIComponent(dropboxUrl)}`;
     const ext = dropboxUrl.split("?")[0].split(".").pop().toLowerCase();
     const isVideo = ["mp4", "webm", "mov"].includes(ext);
+    const isGif = ext === "gif";
 
     if (isVideo) {
       const video = document.createElement("video");
@@ -808,6 +822,19 @@ export async function openDropboxGallery(dropboxUrl, galleryTitle, folderStack =
       };
       container.appendChild(video);
       attachCustomVideoPlayer(video, container);
+    } else if (isGif) {
+      loadGifPlayer({
+        item: container,
+        url: directUrl,
+        filename,
+        playbackObserver,
+        onRetry: () => {
+          if (zipContent) {
+            cleanupContainerMedia(zipContent);
+            openDropboxGallery(dropboxUrl, galleryTitle, folderStack, post);
+          }
+        },
+      });
     } else {
       const img = document.createElement("img");
       img.src = directUrl;
@@ -1240,10 +1267,18 @@ function loadAndDisplayDropboxItem(container, file, signal) {
   if (alreadyLoadedContainer) {
     container.dataset.loaded = "true";
     delete container.dataset.loading;
-    const existingMedia = alreadyLoadedContainer.querySelector("img, video");
+    const existingMedia = alreadyLoadedContainer.querySelector("img, video, canvas");
     if (existingMedia) {
       cleanupContainerMedia(container);
-      container.appendChild(existingMedia.cloneNode(true));
+      if (container.dataset.isClone === "true" && (existingMedia.tagName.toLowerCase() === "video" || existingMedia.tagName.toLowerCase() === "canvas")) {
+        const placeholder = document.createElement("div");
+        placeholder.className = "post-media";
+        placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+        placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+        container.appendChild(placeholder);
+      } else if (existingMedia.tagName.toLowerCase() === "img") {
+        container.appendChild(existingMedia.cloneNode(true));
+      }
     }
     const o = container.querySelector(".media-progress");
     if (o) o.style.display = "none";
@@ -1263,6 +1298,7 @@ function loadAndDisplayDropboxItem(container, file, signal) {
 
   const ext = file.filename.split(".").pop().toLowerCase();
   const isVideo = ["mp4", "webm", "mov"].includes(ext);
+  const isGif = ext === "gif";
 
   let targetUrl = file.rawUrl || file.href || "";
   if (targetUrl) {
@@ -1354,6 +1390,51 @@ function loadAndDisplayDropboxItem(container, file, signal) {
       };
 
       video.src = streamUrl;
+    });
+  } else if (isGif) {
+    allMatchingContainers.forEach((c) => {
+      cleanupContainerMedia(c);
+      if (c.dataset.isClone === "true") {
+        const placeholder = document.createElement("div");
+        placeholder.className = "post-media";
+        placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+        placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+        c.appendChild(placeholder);
+        c.dataset.loaded = "true";
+        delete c.dataset.loading;
+        const o = c.querySelector(".media-progress");
+        if (o) o.style.display = "none";
+        return;
+      }
+
+      const overlay = c.querySelector(".media-progress");
+      loadGifPlayer({
+        item: c,
+        url: streamUrl,
+        filename: file.filename,
+        progressOverlay: overlay,
+        onRetry: () => {
+          allMatchingContainers.forEach((t) => {
+            cleanupContainerMedia(t);
+            delete t.dataset.loading;
+            delete t.dataset.loaded;
+          });
+          loadAndDisplayDropboxItem(container, file, signal);
+        },
+        playbackObserver,
+        signal,
+      }).then(() => {
+        if (signal && signal.aborted) return;
+        allMatchingContainers.forEach((target) => {
+          target.dataset.loaded = "true";
+          delete target.dataset.loading;
+          const o = target.querySelector(".media-progress");
+          if (o) o.style.display = "none";
+        });
+      }).catch((err) => {
+        if (signal && signal.aborted) return;
+        console.warn(`[Dropbox] Failed to load GIF ${file.filename}:`, err);
+      });
     });
   } else {
     const img = new Image();

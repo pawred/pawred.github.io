@@ -970,6 +970,17 @@ export function attachMedia(item, blob, type) {
   }
   const objUrl = URL.createObjectURL(blob);
   item._blobUrl = objUrl;
+  if (type === "gif") {
+    loadGifPlayer({
+      item,
+      url: objUrl,
+      blob,
+      filename: item.dataset.filename || "file.gif",
+      syncCarouselClones,
+      playbackObserver,
+    });
+    return;
+  }
   if (type === "video" || type === "audio") {
     const video = document.createElement(type === "video" ? "video" : "audio");
     video.className = "post-media";

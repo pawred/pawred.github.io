@@ -4,6 +4,7 @@ import { showView, welcomeScreen, navBack, updateNavTabs, wrapCarousel, settings
 import { handleCarouselScrollSettled, smoothScroll, navigateCarousel, getCarouselMetrics, getCurrentGalleryPost, playbackObserver } from "./feed.js";
 import { abortExternalGallery, getMimeType } from "./externalGalleries.js";
 import { attachCustomVideoPlayer } from "./player.js";
+import { loadGifPlayer } from "./gifPlayer.js";
 
 export const zipViewer = document.getElementById("zip-viewer");
 export const zipTitle = document.getElementById("zip-title");
@@ -109,15 +110,32 @@ export function closeZipGallery() {
 
   if (zipViewer) zipViewer.classList.add("hidden");
   if (zipContent) {
-    zipContent.querySelectorAll("video, audio").forEach((media) => {
+    zipContent.querySelectorAll(".media-item").forEach((slide) => {
+      try {
+        if (typeof slide._cleanupGif === "function") {
+          slide._cleanupGif();
+          slide._cleanupGif = null;
+        }
+      } catch (_) {}
+    });
+    zipContent.querySelectorAll("video, audio, canvas").forEach((media) => {
       try {
         if (typeof media._cleanupCustomPlayer === "function") {
           media._cleanupCustomPlayer();
         }
-        media.pause();
+        if (typeof media._cleanupGif === "function") {
+          media._cleanupGif();
+        }
+        if (typeof media.pause === "function") {
+          media.pause();
+        }
         if (playbackObserver) playbackObserver.unobserve(media);
-        media.removeAttribute("src");
-        media.load();
+        if (typeof media.removeAttribute === "function") {
+          media.removeAttribute("src");
+        }
+        if (typeof media.load === "function") {
+          media.load();
+        }
       } catch (_) {}
     });
     zipContent.innerHTML = "";
@@ -347,6 +365,11 @@ export function updateActiveSlideInfo(mediaItem) {
       const video = active.querySelector("video");
       if (video && video.videoWidth && video.videoHeight) {
         dimensions = `${video.videoWidth} × ${video.videoHeight}`;
+      } else {
+        const canvas = active.querySelector("canvas");
+        if (canvas && (canvas.videoWidth || canvas.width) && (canvas.videoHeight || canvas.height)) {
+          dimensions = `${canvas.videoWidth || canvas.width} × ${canvas.videoHeight || canvas.height}`;
+        }
       }
     }
     if (fDimEl && fDimRow) {
@@ -1082,8 +1105,8 @@ export function createFolderRowElement(group, folderIdx, options = {}) {
     cloneFirst._loadMedia = firstChild._loadMedia;
     cloneLast._loadMedia = lastChild._loadMedia;
 
-    cloneFirst.querySelectorAll("video, img").forEach((el) => el.remove());
-    cloneLast.querySelectorAll("video, img").forEach((el) => el.remove());
+    cloneFirst.querySelectorAll("video, img, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
+    cloneLast.querySelectorAll("video, img, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
     delete cloneFirst.dataset.loading;
     delete cloneFirst.dataset.loaded;
     delete cloneLast.dataset.loading;
@@ -1477,9 +1500,13 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
             if (alreadyLoaded) {
               container.dataset.loaded = "true";
               delete container.dataset.loading;
-              const media = alreadyLoaded.querySelector("img, video, audio");
+              const media = alreadyLoaded.querySelector("img, video, audio, canvas");
               if (media) {
-                container.querySelectorAll("img, video, audio, .video-player-wrapper").forEach((el) => el.remove());
+                if (typeof container._cleanupGif === "function") {
+                  try { container._cleanupGif(); } catch (_) {}
+                  container._cleanupGif = null;
+                }
+                container.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
                 if (media.tagName.toLowerCase() === "video") {
                   if (container.dataset.isClone !== "true") {
                     const cloneVid = media.cloneNode(true);
@@ -1498,6 +1525,14 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                     const cloneAud = media.cloneNode(true);
                     container.appendChild(cloneAud);
                     if (playbackObserver) playbackObserver.observe(cloneAud);
+                  }
+                } else if (media.tagName.toLowerCase() === "canvas" || alreadyLoaded.querySelector("canvas[data-is-gif]")) {
+                  if (container.dataset.isClone === "true") {
+                    const placeholder = document.createElement("div");
+                    placeholder.className = "post-media";
+                    placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+                    placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+                    container.appendChild(placeholder);
                   }
                 } else {
                   container.appendChild(media.cloneNode(true));
@@ -1526,10 +1561,15 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
 
               const isVideo = videoExts.includes(f.ext);
               const isAudio = audioExts.includes(f.ext);
+              const isGif = f.ext === "gif";
 
               if (isVideo) {
                 allMatchingContainers.forEach((target) => {
-                  target.querySelectorAll("img, video, audio, .video-player-wrapper").forEach((el) => el.remove());
+                  if (typeof target._cleanupGif === "function") {
+                    try { target._cleanupGif(); } catch (_) {}
+                    target._cleanupGif = null;
+                  }
+                  target.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
                   if (target.dataset.isClone === "true") {
                     const placeholder = document.createElement("div");
                     placeholder.className = "post-media";
@@ -1580,7 +1620,7 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                     allMatchingContainers.forEach((t) => {
                       delete t.dataset.loading;
                       delete t.dataset.loaded;
-                      t.querySelectorAll("img, video, audio, .video-player-wrapper").forEach((el) => el.remove());
+                      t.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
                       const p = t.querySelector(".media-progress");
                       if (p) {
                         p.style.display = "flex";
@@ -1598,7 +1638,11 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                 });
               } else if (isAudio) {
                 allMatchingContainers.forEach((target) => {
-                  target.querySelectorAll("img, video, audio, .video-player-wrapper").forEach((el) => el.remove());
+                  if (typeof target._cleanupGif === "function") {
+                    try { target._cleanupGif(); } catch (_) {}
+                    target._cleanupGif = null;
+                  }
+                  target.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
                   if (target.dataset.isClone === "true") return;
 
                   const audio = document.createElement("audio");
@@ -1626,7 +1670,7 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                     allMatchingContainers.forEach((t) => {
                       delete t.dataset.loading;
                       delete t.dataset.loaded;
-                      t.querySelectorAll("img, video, audio, .video-player-wrapper").forEach((el) => el.remove());
+                      t.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
                       const p = t.querySelector(".media-progress");
                       if (p) {
                         p.style.display = "flex";
@@ -1642,6 +1686,62 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
 
                   audio.src = objUrl;
                 });
+              } else if (isGif) {
+                const arrayBuffer = await fileBlob.arrayBuffer();
+                if (sig && sig.aborted) return;
+                const buffer = new Uint8Array(arrayBuffer);
+
+                const targetNonClone = allMatchingContainers.find((c) => c.dataset.isClone !== "true") || container;
+                const clones = allMatchingContainers.filter((c) => c.dataset.isClone === "true");
+
+                clones.forEach((clone) => {
+                  if (typeof clone._cleanupGif === "function") {
+                    try { clone._cleanupGif(); } catch (_) {}
+                    clone._cleanupGif = null;
+                  }
+                  clone.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
+                  const placeholder = document.createElement("div");
+                  placeholder.className = "post-media";
+                  placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+                  placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+                  clone.appendChild(placeholder);
+                  clone.dataset.loaded = "true";
+                  delete clone.dataset.loading;
+                  const p = clone.querySelector(".media-progress");
+                  if (p) p.style.display = "none";
+                });
+
+                if (typeof targetNonClone._cleanupGif === "function") {
+                  try { targetNonClone._cleanupGif(); } catch (_) {}
+                  targetNonClone._cleanupGif = null;
+                }
+                targetNonClone.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
+
+                const progressOverlay = targetNonClone.querySelector(".media-progress");
+                await loadGifPlayer({
+                  item: targetNonClone,
+                  url: objUrl,
+                  buffer,
+                  filename: f.name,
+                  progressOverlay,
+                  onRetry: () => {
+                    if (typeof targetNonClone._loadMedia === "function") {
+                      targetNonClone._loadMedia(targetNonClone, sig);
+                    }
+                  },
+                  playbackObserver,
+                  signal: sig,
+                });
+
+                if (sig && sig.aborted) return;
+                targetNonClone.dataset.loaded = "true";
+                delete targetNonClone.dataset.loading;
+                if (progressOverlay) progressOverlay.style.display = "none";
+
+                const active = getActiveMediaItem();
+                if (active && (active.item === targetNonClone || active.item?.dataset?.fileIdx === targetNonClone.dataset.fileIdx)) {
+                  updateActiveSlideInfo(targetNonClone);
+                }
               } else {
                 const img = new Image();
                 img.style.maxWidth = "100%";
@@ -1653,7 +1753,11 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                   allMatchingContainers.forEach((target) => {
                     target.dataset.loaded = "true";
                     delete target.dataset.loading;
-                    target.querySelectorAll("img, video, audio, .video-player-wrapper").forEach((el) => el.remove());
+                    if (typeof target._cleanupGif === "function") {
+                      try { target._cleanupGif(); } catch (_) {}
+                      target._cleanupGif = null;
+                    }
+                    target.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
                     target.appendChild(img.cloneNode(true));
                     const p = target.querySelector(".media-progress");
                     if (p) p.style.display = "none";
@@ -1667,7 +1771,11 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                   allMatchingContainers.forEach((target) => {
                     delete target.dataset.loading;
                     delete target.dataset.loaded;
-                    target.querySelectorAll("img, video, audio, .video-player-wrapper").forEach((el) => el.remove());
+                    if (typeof target._cleanupGif === "function") {
+                      try { target._cleanupGif(); } catch (_) {}
+                      target._cleanupGif = null;
+                    }
+                    target.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
                     const p = target.querySelector(".media-progress");
                     if (p) {
                       p.style.display = "flex";
@@ -1686,12 +1794,16 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
               allMatchingContainers.forEach((target) => {
                 delete target.dataset.loading;
                 delete target.dataset.loaded;
-                target.querySelectorAll("img, video, audio, .video-player-wrapper").forEach((el) => el.remove());
+                if (typeof target._cleanupGif === "function") {
+                  try { target._cleanupGif(); } catch (_) {}
+                  target._cleanupGif = null;
+                }
+                target.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
                 const p = target.querySelector(".media-progress");
                 if (p) {
                   p.style.display = "flex";
                   showMediaUnavailableWarning(p, {
-                    type: videoExts.includes(f.ext) ? "video" : audioExts.includes(f.ext) ? "audio" : "image",
+                    type: videoExts.includes(f.ext) ? "video" : audioExts.includes(f.ext) ? "audio" : f.ext === "gif" ? "gif" : "image",
                     filename: f.name,
                     errorStatus: "Error",
                     message: "Failed to extract file from archive"

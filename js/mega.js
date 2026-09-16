@@ -1,9 +1,10 @@
 import { PROXY_URL, state } from "./state.js";
 import { zipViewer, zipTitle, zipContent, zipIndicator, setZipNavVisible, render2DMatrixGallery } from "./zip.js";
 import { formatBytes, showMediaUnavailableWarning, renderArchiveProgress, renderMediaProgress } from "./utils.js";
-import { attachMedia, syncCarouselClones, getCurrentGalleryPost } from "./feed.js";
+import { attachMedia, syncCarouselClones, getCurrentGalleryPost, playbackObserver } from "./feed.js";
 import { createExternalAbortSignal, renderArchiveCardUI, escapeHtml, getMimeType, isImageOrVideo } from "./externalGalleries.js";
 import { attachCustomVideoPlayer } from "./player.js";
+import { loadGifPlayer } from "./gifPlayer.js";
 
 export const megaFolderCache = new Map();
 export const megaBlobCache = new Map();
@@ -570,7 +571,8 @@ export async function handleMegaSingleFileEmbed(item, parsed, progressOverlay, p
     if (megaBlobCache.has(blobKey)) {
       const blob = megaBlobCache.get(blobKey);
       const isVideo = blob.type.startsWith("video/");
-      attachMedia(item, blob, isVideo ? "video" : "image");
+      const isGif = blob.type === "image/gif" || (fallbackName || "").split(".").pop().toLowerCase() === "gif";
+      attachMedia(item, blob, isVideo ? "video" : isGif ? "gif" : "image");
       if (progressOverlay) progressOverlay.style.display = "none";
       syncCarouselClones(item);
       return;
@@ -599,8 +601,10 @@ export async function handleMegaSingleFileEmbed(item, parsed, progressOverlay, p
     }
 
     const totalSize = data[0].s || 0;
-    const isVideo = ["mp4", "webm"].includes(filename.split(".").pop().toLowerCase());
-    const isImage = isImageOrVideo(filename) && !isVideo;
+    const ext = filename.split(".").pop().toLowerCase();
+    const isVideo = ["mp4", "webm"].includes(ext);
+    const isGif = ext === "gif";
+    const isImage = (isImageOrVideo(filename) && !isVideo) || isGif;
 
     if (isImage || isVideo) {
       if (progressOverlay) {
@@ -635,7 +639,7 @@ export async function handleMegaSingleFileEmbed(item, parsed, progressOverlay, p
       );
       if (signal.aborted) return;
       cacheMegaBlob(blobKey, blob);
-      attachMedia(item, blob, isVideo ? "video" : "image");
+      attachMedia(item, blob, isVideo ? "video" : isGif ? "gif" : "image");
       if (progressOverlay) progressOverlay.style.display = "none";
       syncCarouselClones(item);
     } else {
@@ -669,6 +673,11 @@ export async function downloadAndAttachSingleMegaFile(item, folderId, singleFile
   try {
     const blobKey = folderId + "/" + singleFile.node.h;
     const totalSize = singleFile.size || singleFile.node?.s || 0;
+    const ext = (singleFile.name || "").split(".").pop().toLowerCase();
+    const isVid = typeof isVideo === "boolean" ? isVideo : ["mp4", "webm"].includes(ext);
+    const isGif = ext === "gif";
+    const mediaType = isVid ? "video" : isGif ? "gif" : "image";
+
     if (progressOverlay) {
       progressOverlay.style.display = "flex";
       renderMediaProgress(
@@ -708,7 +717,7 @@ export async function downloadAndAttachSingleMegaFile(item, folderId, singleFile
 
     if (signal.aborted) return;
     cacheMegaBlob(blobKey, blob);
-    attachMedia(item, blob, isVideo ? "video" : "image");
+    attachMedia(item, blob, mediaType);
     if (progressOverlay) progressOverlay.style.display = "none";
     syncCarouselClones(item);
   } catch (err) {
@@ -717,8 +726,11 @@ export async function downloadAndAttachSingleMegaFile(item, folderId, singleFile
     if (progressOverlay) {
       const originalUrl = (item && item.dataset && item.dataset.url) || "";
       const detectedStatus = String(err.status || (err.message && err.message.match(/HTTP\s+(\d{3})/i)?.[1]) || (err.message && err.message.match(/Mega error\s+(-\d+)/i)?.[1]) || "404");
+      const ext = (singleFile.name || "").split(".").pop().toLowerCase();
+      const isVid = typeof isVideo === "boolean" ? isVideo : ["mp4", "webm"].includes(ext);
+      const isGif = ext === "gif";
       showMediaUnavailableWarning(progressOverlay, {
-        type: isVideo ? "video" : "image",
+        type: isVid ? "video" : isGif ? "gif" : "image",
         filename: singleFile.name,
         errorStatus: detectedStatus,
         message: err.message || "Failed to load Mega file",
@@ -738,10 +750,13 @@ export async function handleMegaFolderEmbed(item, parsed, progressOverlay, postT
       if (progressOverlay) progressOverlay.style.display = "none";
       if (cached.singleFile) {
         const singleFile = cached.singleFile;
-        const isVideo = ["mp4", "webm"].includes(singleFile.name.split(".").pop().toLowerCase());
+        const ext = singleFile.name.split(".").pop().toLowerCase();
+        const isGif = ext === "gif";
+        const isVideo = ["mp4", "webm"].includes(ext);
+        const mediaType = isVideo ? "video" : isGif ? "gif" : "image";
         const blobKey = parsed.id + "/" + singleFile.node.h;
         if (megaBlobCache.has(blobKey)) {
-          attachMedia(item, megaBlobCache.get(blobKey), isVideo ? "video" : "image");
+          attachMedia(item, megaBlobCache.get(blobKey), mediaType);
           syncCarouselClones(item);
           return;
         }
@@ -808,11 +823,14 @@ export async function handleMegaFolderEmbed(item, parsed, progressOverlay, postT
 
     if (mediaFiles.length === 1) {
       const singleFile = mediaFiles[0];
-      const isVideo = ["mp4", "webm"].includes(singleFile.name.split(".").pop().toLowerCase());
+      const ext = singleFile.name.split(".").pop().toLowerCase();
+      const isGif = ext === "gif";
+      const isVideo = ["mp4", "webm"].includes(ext);
+      const mediaType = isVideo ? "video" : isGif ? "gif" : "image";
       const blobKey = parsed.id + "/" + singleFile.node.h;
 
       if (megaBlobCache.has(blobKey)) {
-        attachMedia(item, megaBlobCache.get(blobKey), isVideo ? "video" : "image");
+        attachMedia(item, megaBlobCache.get(blobKey), mediaType);
         if (progressOverlay) progressOverlay.style.display = "none";
         syncCarouselClones(item);
         return;
@@ -1230,6 +1248,16 @@ async function handleSingleMegaFile(parsed, title, signal) {
     video.style.objectFit = "contain";
     container.appendChild(video);
     attachCustomVideoPlayer(video, container);
+  } else if (ext === "gif") {
+    container.className = "media-item";
+    loadGifPlayer({
+      item: container,
+      url: blobUrl,
+      blob,
+      filename,
+      signal,
+      playbackObserver,
+    });
   } else {
     const img = document.createElement("img");
     img.src = blobUrl;
@@ -1242,9 +1270,11 @@ async function handleSingleMegaFile(parsed, title, signal) {
 }
 
 async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, signal) {
-  if (!file || container.dataset.loading === "true") return;
+  if (!file || container.dataset.loaded === "true" || container.dataset.loading === "true") return;
 
-  const isVideo = ["mp4", "webm"].includes((file.name || "").split(".").pop().toLowerCase());
+  const ext = (file.name || "").split(".").pop().toLowerCase();
+  const isVideo = ["mp4", "webm"].includes(ext);
+  const isGif = ext === "gif";
 
   container.dataset.fileId = file.node.h;
   container.dataset.loading = "true";
@@ -1330,6 +1360,17 @@ async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, si
       if (o) o.style.display = "none";
 
       if (isVideo) {
+        if (c.dataset.isClone === "true") {
+          if (!c.querySelector(".post-media")) {
+            const placeholder = document.createElement("div");
+            placeholder.className = "post-media";
+            placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+            placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+            c.appendChild(placeholder);
+          }
+          return;
+        }
+
         let vid = c.querySelector("video");
         if (!vid) {
           vid = document.createElement("video");
@@ -1345,6 +1386,46 @@ async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, si
           attachCustomVideoPlayer(vid, c);
         }
         vid.src = blobUrl;
+      } else if (isGif) {
+        if (c.dataset.isClone === "true") {
+          if (!c.querySelector(".post-media")) {
+            const placeholder = document.createElement("div");
+            placeholder.className = "post-media";
+            placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+            placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+            c.appendChild(placeholder);
+          }
+          return;
+        }
+
+        let canvas = c.querySelector("canvas");
+        if (!canvas) {
+          const cachedBlob = megaBlobCache.get(globalBlobKey);
+          const progressEl = c.querySelector(".media-progress");
+          loadGifPlayer({
+            item: c,
+            url: blobUrl,
+            blob: cachedBlob,
+            filename: file.name,
+            progressOverlay: progressEl,
+            playbackObserver,
+            signal,
+            onRetry: () => {
+              c.dataset.loading = "false";
+              delete c.dataset.loaded;
+              loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, signal);
+            },
+          }).then(() => {
+            if (signal && signal.aborted) return;
+            c.dataset.loaded = "true";
+            c.dataset.loading = "false";
+            const prog = c.querySelector(".media-progress");
+            if (prog) prog.style.display = "none";
+          }).catch((err) => {
+            if (signal && signal.aborted) return;
+            console.warn(`[Mega] Failed to load GIF ${file.name}:`, err);
+          });
+        }
       } else {
         let image = c.querySelector("img");
         if (!image) {
@@ -1369,7 +1450,7 @@ async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, si
     if (overlay) {
       const detectedStatus = String(err.status || (err.message && err.message.match(/HTTP\s+(\d{3})/i)?.[1]) || (err.message && err.message.match(/Mega error\s+(-\d+)/i)?.[1]) || "404");
       showMediaUnavailableWarning(overlay, {
-        type: isVideo ? "video" : "image",
+        type: isVideo ? "video" : isGif ? "gif" : "image",
         filename: file.name,
         errorStatus: detectedStatus,
         message: err.message || "Failed to load Mega file",
