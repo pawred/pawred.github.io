@@ -629,6 +629,7 @@ export async function loadMediaWithProgress(item) {
             continue;
           }
           const { done, value } = await activeReader.read();
+          if (signal.aborted) throw new DOMException("Aborted", "AbortError");
           if (done) break;
           downloadChunks.push(value);
           downloadedBytes += value.length;
@@ -643,6 +644,10 @@ export async function loadMediaWithProgress(item) {
           }
         }
         activeReader = null;
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+        if (totalSize > 0 && downloadedBytes < totalSize) {
+          throw new Error(`Incomplete download: received ${downloadedBytes} of ${totalSize} bytes`);
+        }
         zipBlob = new Blob(downloadChunks);
         downloadChunks = [];
         if (!sizeStr) {
@@ -651,12 +656,16 @@ export async function loadMediaWithProgress(item) {
         if (filenames.length === 0 && window.unzipit) {
           try {
             const { entries } = await window.unzipit.unzip(zipBlob);
+            if (signal.aborted) throw new DOMException("Aborted", "AbortError");
             filenames = Object.keys(entries)
               .filter((p) => !p.endsWith("/") && !p.startsWith("__MACOSX/"))
               .map((p) => p.split("/").pop());
             filenames.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
-          } catch (_) {}
+          } catch (e) {
+            if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+          }
         }
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
         renderTree();
         btnPause.style.display = "none";
         btnAbort.style.display = "none";
@@ -664,11 +673,16 @@ export async function loadMediaWithProgress(item) {
         btnView.style.display = "inline-block";
         progressContainer.style.display = "none";
       } catch (err) {
-        if (err.name === "AbortError" || signal.aborted) return;
+        if (err.name === "AbortError" || signal.aborted) {
+          resetDownloadState();
+          return;
+        }
         progressText.textContent = "Error downloading.";
         btnDownload.style.display = "inline-block";
         btnPause.style.display = "none";
         btnAbort.style.display = "none";
+        btnSave.style.display = "none";
+        btnView.style.display = "none";
       }
     }
 

@@ -1349,6 +1349,10 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
           throw new DOMException("Aborted", "AbortError");
         }
         const { done, value } = await reader.read();
+        if (signal.aborted) {
+          try { reader.cancel(); } catch (_) {}
+          throw new DOMException("Aborted", "AbortError");
+        }
         if (done) break;
         chunks.push(value);
         loaded += value.length;
@@ -1362,6 +1366,10 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
         } else if (progressText) {
           renderArchiveProgress(progressText, "Downloading Archive...", null, filename, formatBytes(loaded));
         }
+      }
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      if (total > 0 && loaded < total) {
+        throw new Error(`Incomplete download: received ${loaded} of ${total} bytes`);
       }
       blob = new Blob(chunks);
     }

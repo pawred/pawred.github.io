@@ -487,6 +487,7 @@ export async function downloadAndDecryptMegaPayload(dlUrl, rawNodeKey, filename,
       while (true) {
         if (signal && signal.aborted) throw new Error("Aborted");
         const { done, value } = await reader.read();
+        if (signal && signal.aborted) throw new Error("Aborted");
         if (done) break;
         chunks.push(value);
         received += value.length;
@@ -499,6 +500,11 @@ export async function downloadAndDecryptMegaPayload(dlUrl, rawNodeKey, filename,
       }
     } finally {
       if (signal) signal.removeEventListener("abort", onAbort);
+    }
+
+    if (signal && signal.aborted) throw new Error("Aborted");
+    if (totalBytes > 0 && received < totalBytes) {
+      throw new Error(`Incomplete download: received ${received} of ${totalBytes} bytes`);
     }
 
     const fullEnc = new Uint8Array(received);

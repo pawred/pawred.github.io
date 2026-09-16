@@ -956,6 +956,7 @@ export async function loadGifPlayer({
       while (true) {
         if (signal.aborted) return;
         const { done, value } = await reader.read();
+        if (signal.aborted) return;
         if (done) break;
 
         chunks.push(value);
