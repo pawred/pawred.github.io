@@ -617,6 +617,10 @@ export async function loadMediaWithProgress(item) {
         const response = await fetch(url, { signal });
         if (!response.ok) throw new Error(`Network error: ${response.status}`);
         totalSize = parseInt(response.headers.get("content-length") || "0", 10);
+        const MAX_DOWNLOAD_BUFFER_SIZE = 2 * 1024 * 1024 * 1024; // 2GB memory ceiling
+        if (totalSize > MAX_DOWNLOAD_BUFFER_SIZE) {
+          throw new Error(`Archive (${formatBytes(totalSize)}) exceeds browser memory limit (2GB). Please use direct download.`);
+        }
         if (totalSize > 0 && !sizeStr) {
           sizeStr = formatBytes(totalSize);
           renderTree();
@@ -633,6 +637,10 @@ export async function loadMediaWithProgress(item) {
           if (done) break;
           downloadChunks.push(value);
           downloadedBytes += value.length;
+          if (downloadedBytes > MAX_DOWNLOAD_BUFFER_SIZE) {
+            try { activeReader.cancel(); } catch (_) {}
+            throw new Error("Download stopped: exceeded 2GB browser memory limit.");
+          }
           if (totalSize) {
             progressFill.style.width = Math.min(100, (downloadedBytes / totalSize) * 100) + "%";
             const elapsed = (Date.now() - startTime) / 1000;
@@ -677,7 +685,7 @@ export async function loadMediaWithProgress(item) {
           resetDownloadState();
           return;
         }
-        progressText.textContent = "Error downloading.";
+        progressText.textContent = err.message || "Error downloading.";
         btnDownload.style.display = "inline-block";
         btnPause.style.display = "none";
         btnAbort.style.display = "none";
@@ -1600,7 +1608,7 @@ export function createPostCard(post) {
 
       const mediaName = mediaObj.name || mediaPath.split("/").pop() || "media";
       const sizeLabel = mediaObj.bytes ? formatBytes(mediaObj.bytes) : (mediaObj.size ? formatBytes(mediaObj.size) : "");
-      renderMediaProgress(progressOverlay, "Loading...", null, mediaName, sizeLabel, "");
+      renderMediaProgress(progressOverlay, "Loading...", null, mediaName, "", sizeLabel);
 
       carousel.appendChild(item);
       mediaObserver.observe(item);

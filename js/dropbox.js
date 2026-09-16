@@ -1,5 +1,5 @@
 import { PROXY_URL, state } from "./state.js";
-import { zipViewer, zipTitle, zipContent, zipIndicator, setZipNavVisible, closeZipGallery, render2DMatrixGallery, appendFolderGroupTo2DMatrix, updateZipScanProgress, updateZipIndicatorsAndHUD } from "./zip.js";
+import { zipViewer, zipTitle, zipContent, zipIndicator, setZipNavVisible, closeZipGallery, render2DMatrixGallery, appendFolderGroupTo2DMatrix, updateZipScanProgress, updateZipIndicatorsAndHUD, getActiveMediaItem } from "./zip.js";
 import { formatBytes, showMediaUnavailableWarning, renderMediaProgress, renderArchiveProgress } from "./utils.js";
 import { syncCarouselClones, playbackObserver, getCurrentGalleryPost } from "./feed.js";
 import { createExternalAbortSignal, renderArchiveCardUI, escapeHtml, isImageOrVideo } from "./externalGalleries.js";
@@ -8,6 +8,23 @@ import { loadGifPlayer } from "./gifPlayer.js";
 
 export const dropboxFolderCache = new Map();
 const dropboxInFlight = new Map();
+export const dropboxGalleryCache = new Map();
+
+export function getCleanDropboxUrl(url) {
+  if (!url) return "";
+  let target = url;
+  if (!target.startsWith("http://") && !target.startsWith("https://")) {
+    target = `https://www.dropbox.com${target.startsWith("/") ? "" : "/"}${target}`;
+  }
+  try {
+    const u = new URL(target);
+    u.searchParams.delete("raw");
+    u.searchParams.set("dl", "0");
+    return u.toString();
+  } catch (_) {
+    return target;
+  }
+}
 
 function cleanupContainerMedia(target) {
   if (!target) return;
@@ -35,7 +52,12 @@ function cleanupContainerMedia(target) {
       if (typeof v.load === "function") v.load();
     } catch (_) {}
   });
-  target.querySelectorAll("video, audio, img.post-media, canvas.post-media, .video-player-wrapper").forEach((el) => el.remove());
+  target.querySelectorAll("video, audio, img, canvas, .video-player-wrapper").forEach((el) => {
+    if (el.tagName === "IMG" && el.src && el.src.startsWith("blob:")) {
+      try { URL.revokeObjectURL(el.src); } catch (_) {}
+    }
+    el.remove();
+  });
 }
 
 /**
@@ -186,6 +208,60 @@ export async function fetchDropboxFolderEntries(url, signal) {
       }
 
       const data = await res.json();
+
+      let parentRlkey = "";
+      let parentSt = "";
+      try {
+        const pUrl = cleanUrl.startsWith("http") ? cleanUrl : `https://www.dropbox.com${cleanUrl.startsWith("/") ? "" : "/"}${cleanUrl}`;
+        const parentParsed = new URL(pUrl);
+        parentRlkey = parentParsed.searchParams.get("rlkey") || "";
+        parentSt = parentParsed.searchParams.get("st") || "";
+      } catch (_) {}
+
+      if (Array.isArray(data.entries)) {
+        data.entries.forEach((item) => {
+          let href = item.href || "";
+          if (href) {
+            if (!href.startsWith("http://") && !href.startsWith("https://")) {
+              href = `https://www.dropbox.com${href.startsWith("/") ? "" : "/"}${href}`;
+            }
+            try {
+              const u = new URL(href);
+              if (parentRlkey && !u.searchParams.has("rlkey")) {
+                u.searchParams.set("rlkey", parentRlkey);
+              }
+              if (parentSt && !u.searchParams.has("st")) {
+                u.searchParams.set("st", parentSt);
+              }
+              href = u.toString();
+            } catch (_) {}
+            item.href = href;
+          }
+
+          let rawUrl = item.rawUrl || item.href || "";
+          if (rawUrl) {
+            if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
+              rawUrl = `https://www.dropbox.com${rawUrl.startsWith("/") ? "" : "/"}${rawUrl}`;
+            }
+            try {
+              const u = new URL(rawUrl);
+              if (!item.is_dir) {
+                u.searchParams.set("raw", "1");
+                u.searchParams.delete("dl");
+              }
+              if (parentRlkey && !u.searchParams.has("rlkey")) {
+                u.searchParams.set("rlkey", parentRlkey);
+              }
+              if (parentSt && !u.searchParams.has("st")) {
+                u.searchParams.set("st", parentSt);
+              }
+              rawUrl = u.toString();
+            } catch (_) {}
+            item.rawUrl = rawUrl;
+          }
+        });
+      }
+
       if (dropboxFolderCache.size >= 50) {
         const oldestKey = dropboxFolderCache.keys().next().value;
         if (oldestKey) dropboxFolderCache.delete(oldestKey);
@@ -229,16 +305,21 @@ export function handleDropboxFileCard(item, url, postTitle, filename, progressOv
 
   if (isGif || isImage || isVideo) {
     let targetUrl = url;
+    if (targetUrl && !targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+      targetUrl = `https://www.dropbox.com${targetUrl.startsWith("/") ? "" : "/"}${targetUrl}`;
+    }
     try {
-      const u = new URL(url);
+      const u = new URL(targetUrl);
       u.searchParams.set("raw", "1");
       u.searchParams.delete("dl");
       targetUrl = u.toString();
     } catch (_) {}
-    const directUrl = `${PROXY_URL}/proxy?url=${encodeURIComponent(targetUrl)}`;
+    const directUrl = `${PROXY_URL}/dropbox?url=${encodeURIComponent(targetUrl)}`;
     if (progressOverlay) {
       progressOverlay.style.display = "flex";
-      renderMediaProgress(progressOverlay, "Loading...", null, filename, "", "");
+      const totalSize = parseInt(item.dataset.size || "0", 10);
+      const totalStr = totalSize > 0 ? formatBytes(totalSize) : "";
+      renderMediaProgress(progressOverlay, "Loading...", null, filename, "", totalStr);
     }
     const triggerRetry = () => {
       cleanupContainerMedia(item);
@@ -323,6 +404,16 @@ export function handleDropboxFileCard(item, url, postTitle, filename, progressOv
  */
 export async function handleDropboxFolderEmbed(item, url, progressOverlay, postTitle, fallbackName, signal) {
   try {
+    const cleanUrl = getCleanDropboxUrl(url);
+    if (dropboxGalleryCache.has(cleanUrl)) {
+      const cached = dropboxGalleryCache.get(cleanUrl);
+      if (cached && cached.details) {
+        if (progressOverlay) progressOverlay.style.display = "none";
+        renderArchiveCardUI(item, url, "dropbox", postTitle, cached.archiveName || fallbackName || "Dropbox Archive", signal, cached.details);
+        return;
+      }
+    }
+
     if (progressOverlay) {
       progressOverlay.style.display = "flex";
       renderMediaProgress(progressOverlay, "Loading...", null, fallbackName || "Dropbox Folder", "Connecting...", "");
@@ -361,6 +452,9 @@ export async function handleDropboxFolderEmbed(item, url, progressOverlay, postT
       const isVideo = ["mp4", "webm", "mov"].includes(single.filename.split(".").pop().toLowerCase());
       let targetUrl = single.rawUrl || single.href || "";
       if (targetUrl) {
+        if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+          targetUrl = `https://www.dropbox.com${targetUrl.startsWith("/") ? "" : "/"}${targetUrl}`;
+        }
         try {
           const u = new URL(targetUrl);
           u.searchParams.set("raw", "1");
@@ -368,7 +462,7 @@ export async function handleDropboxFolderEmbed(item, url, progressOverlay, postT
           targetUrl = u.toString();
         } catch (_) {}
       }
-      const streamUrl = `${PROXY_URL}/proxy?url=${encodeURIComponent(targetUrl)}`;
+      const streamUrl = `${PROXY_URL}/dropbox?url=${encodeURIComponent(targetUrl)}`;
 
       if (progressOverlay) progressOverlay.style.display = "none";
 
@@ -490,6 +584,40 @@ export async function handleDropboxFolderEmbed(item, url, progressOverlay, postT
   }
 }
 
+export function entriesToFolderGroups(allEntries, rootName) {
+  const naturalCompare = (a, b) => {
+    const strA = (typeof a === "string" ? a : (a.path || a.name || a.filename || "")).toLowerCase();
+    const strB = (typeof b === "string" ? b : (b.path || b.name || b.filename || "")).toLowerCase();
+    return strA.localeCompare(strB, undefined, { numeric: true, sensitivity: "base" });
+  };
+
+  const folderMap = new Map();
+  const mediaFiles = (allEntries || []).filter((e) => !e.is_dir && isImageOrVideo(e.filename));
+
+  for (const file of mediaFiles) {
+    const rawPath = file.path || file.filename;
+    const parts = rawPath.split("/").filter(Boolean);
+    const folderPath = parts.length > 1 ? parts.slice(0, -1).join("/") : rootName;
+    const folderName = parts.length > 1 ? parts[parts.length - 2] : rootName;
+
+    if (!folderMap.has(folderPath)) {
+      folderMap.set(folderPath, {
+        folderName,
+        folderPath,
+        files: []
+      });
+    }
+    folderMap.get(folderPath).files.push(file);
+  }
+
+  const sortedPaths = Array.from(folderMap.keys()).sort(naturalCompare);
+  return sortedPaths.map((p) => {
+    const group = folderMap.get(p);
+    group.files.sort((a, b) => naturalCompare(a.filename, b.filename));
+    return group;
+  });
+}
+
 /**
  * Progressively crawls Dropbox subfolders in the background.
  */
@@ -508,9 +636,17 @@ async function progressivelyExpandDropboxTree(cardItem, rootUrl, initialEntries,
     }
   }
 
+  const naturalCompare = (a, b) => {
+    const strA = (typeof a === "string" ? a : (a.path || a.name || a.filename || "")).toLowerCase();
+    const strB = (typeof b === "string" ? b : (b.path || b.name || b.filename || "")).toLowerCase();
+    return strA.localeCompare(strB, undefined, { numeric: true, sensitivity: "base" });
+  };
+
   const queue = initialEntries
     .filter((e) => e.is_dir && e.href)
     .map((e) => ({ ...e, path: e.path || e.filename }));
+
+  queue.sort(naturalCompare);
 
   if (queue.length === 0) return;
 
@@ -595,11 +731,10 @@ async function progressivelyExpandDropboxTree(cardItem, rootUrl, initialEntries,
     }
   }
 
-  const MAX_CONCURRENT = 5;
   const MAX_TOTAL_FOLDERS = 400;
   let crawledCount = 0;
 
-  async function worker() {
+  async function expandWorker() {
     while (queue.length > 0 && running) {
       if (signal && signal.aborted) break;
       if (!cardItem.isConnected) break;
@@ -608,6 +743,13 @@ async function progressivelyExpandDropboxTree(cardItem, rootUrl, initialEntries,
       const current = queue.shift();
       if (!current || !current.href) continue;
 
+      // Prefetch upcoming folders in queue
+      for (let i = 0; i < 3 && i < queue.length; i++) {
+        if (queue[i] && queue[i].href) {
+          fetchDropboxFolderEntries(queue[i].href, signal).catch(() => {});
+        }
+      }
+
       crawledCount++;
       try {
         const data = await fetchDropboxFolderEntries(current.href, signal);
@@ -615,6 +757,8 @@ async function progressivelyExpandDropboxTree(cardItem, rootUrl, initialEntries,
         if (!cardItem.isConnected) break;
 
         const subEntries = data.entries || [];
+        const newDirs = [];
+
         for (const child of subEntries) {
           const childPath = `${current.path}/${child.filename}`;
           if (seenPaths.has(childPath)) continue;
@@ -626,12 +770,18 @@ async function progressivelyExpandDropboxTree(cardItem, rootUrl, initialEntries,
           if (child.is_dir) {
             if (child.href && !seenFolders.has(child.href)) {
               seenFolders.add(child.href);
-              queue.push(childEntry);
+              newDirs.push(childEntry);
             }
           } else {
             discoveredBytes += (child.bytes || 0);
           }
         }
+
+        if (newDirs.length > 0) {
+          newDirs.sort(naturalCompare);
+          queue.unshift(...newDirs);
+        }
+
         scheduleUpdate(false);
       } catch (err) {
         if (signal && signal.aborted) break;
@@ -640,25 +790,72 @@ async function progressivelyExpandDropboxTree(cardItem, rootUrl, initialEntries,
   }
 
   try {
-    const workers = Array.from({ length: MAX_CONCURRENT }, () => worker());
-    await Promise.all(workers);
+    await expandWorker();
   } finally {
     running = false;
     if (updateTimer) clearTimeout(updateTimer);
     scheduleUpdate(true);
+
+    const cleanUrl = getCleanDropboxUrl(rootUrl);
+    const groups = entriesToFolderGroups(allEntries, folderName);
+    if (groups.length > 0) {
+      if (dropboxGalleryCache.size >= 50) {
+        const oldestKey = dropboxGalleryCache.keys().next().value;
+        if (oldestKey) dropboxGalleryCache.delete(oldestKey);
+      }
+      const files = allEntries.filter((e) => !e.is_dir);
+      const dirs = allEntries.filter((e) => e.is_dir);
+      const effectiveTotal = (initialTotalSize && initialTotalSize > 0) ? initialTotalSize : discoveredBytes;
+      const sizeStr = effectiveTotal > 0 ? `${formatBytes(effectiveTotal)}, ` : "";
+      let countText = "";
+      if (files.length > 0 && dirs.length > 0) {
+        countText = `${files.length} file${files.length > 1 ? "s" : ""}, ${dirs.length} folder${dirs.length > 1 ? "s" : ""}`;
+      } else if (files.length > 0) {
+        countText = `${files.length} file${files.length > 1 ? "s" : ""}`;
+      } else {
+        countText = `${dirs.length} folder${dirs.length > 1 ? "s" : ""}`;
+      }
+      const { tree } = formatDropboxFileTree(allEntries, folderName);
+      let fullTree = "";
+      if (archiveName && !tree.startsWith("└── " + archiveName)) {
+        fullTree = `${archiveName}\n${tree}`;
+      } else {
+        fullTree = tree;
+      }
+
+      dropboxGalleryCache.set(cleanUrl, {
+        folderName,
+        archiveName,
+        groups,
+        details: {
+          totalSize: effectiveTotal,
+          fileCount: files.length,
+          countLabel: countText,
+          tree: fullTree
+        }
+      });
+    }
   }
 }
 
 /**
- * Recursively discovers all subfolders and media files inside a Dropbox shared directory.
+ * Recursively discovers all subfolders and media files inside a Dropbox shared directory,
+ * traversing and discovering folders sequentially from first to last using natural alphanumeric sorting.
  */
 export async function crawlAllDropboxFolders(rootUrl, rootName, initialEntries, signal, onProgress, onFolderDiscovered) {
   const folderGroupsMap = new Map();
   const seenUrls = new Set();
   seenUrls.add(rootUrl);
 
+  const naturalCompare = (a, b) => {
+    const strA = (typeof a === "string" ? a : (a.path || a.name || a.filename || "")).toLowerCase();
+    const strB = (typeof b === "string" ? b : (b.path || b.name || b.filename || "")).toLowerCase();
+    return strA.localeCompare(strB, undefined, { numeric: true, sensitivity: "base" });
+  };
+
   const rootFiles = (initialEntries || []).filter((e) => !e.is_dir && isImageOrVideo(e.filename));
   if (rootFiles.length > 0) {
+    rootFiles.sort((a, b) => naturalCompare(a.path || a.filename, b.path || b.filename));
     const rootGroup = {
       folderName: rootName,
       folderPath: rootName,
@@ -667,70 +864,107 @@ export async function crawlAllDropboxFolders(rootUrl, rootName, initialEntries, 
     folderGroupsMap.set(rootName, rootGroup);
   }
 
-  const queue = (initialEntries || [])
+  const initialSubfolders = (initialEntries || [])
     .filter((e) => e.is_dir && e.href)
-    .map((e) => ({ name: e.filename, path: e.filename, url: e.href }));
+    .map((e) => ({
+      name: e.filename,
+      path: e.filename,
+      url: e.href
+    }));
 
-  for (const item of queue) {
+  initialSubfolders.sort(naturalCompare);
+
+  for (const item of initialSubfolders) {
     seenUrls.add(item.url);
   }
 
-  const MAX_CONCURRENT = 6;
-  const MAX_FOLDERS = 150;
+  const MAX_FOLDERS = 200;
   let crawled = 0;
 
-  async function crawlWorker() {
-    while (queue.length > 0) {
-      if (signal && signal.aborted) break;
-      if (crawled >= MAX_FOLDERS) break;
+  async function crawlFolder(folder, siblingList = [], siblingIndex = -1) {
+    if (signal && signal.aborted) return;
+    if (crawled >= MAX_FOLDERS) return;
 
-      const curr = queue.shift();
-      if (!curr) continue;
-      crawled++;
-      if (onProgress) onProgress(crawled);
+    crawled++;
+    if (onProgress) onProgress(crawled);
 
-      try {
-        const subData = await fetchDropboxFolderEntries(curr.url, signal);
-        if (signal && signal.aborted) break;
-
-        const subEntries = subData.entries || [];
-        const files = subEntries.filter((e) => !e.is_dir && isImageOrVideo(e.filename));
-        if (files.length > 0) {
-          const group = {
-            folderName: curr.name,
-            folderPath: curr.path,
-            files: files
-          };
-          folderGroupsMap.set(curr.path, group);
-          if (onFolderDiscovered) {
-            onFolderDiscovered(group);
-          }
+    // Opportunistically prefetch upcoming siblings in the background so the next
+    // HTTP roundtrip is already in-flight or completed in cache when we need it.
+    if (siblingList.length > 0 && siblingIndex >= 0) {
+      const prefetchCount = 3;
+      for (let i = 1; i <= prefetchCount; i++) {
+        const nextSibling = siblingList[siblingIndex + i];
+        if (nextSibling && nextSibling.url && !seenUrls.has(nextSibling.url)) {
+          fetchDropboxFolderEntries(nextSibling.url, signal).catch(() => {});
         }
-
-        for (const child of subEntries) {
-          if (child.is_dir && child.href && !seenUrls.has(child.href)) {
-            seenUrls.add(child.href);
-            queue.push({
-              name: child.filename,
-              path: `${curr.path}/${child.filename}`,
-              url: child.href
-            });
-          }
-        }
-      } catch (_) {}
+      }
     }
+
+    try {
+      const subData = await fetchDropboxFolderEntries(folder.url, signal);
+      if (signal && signal.aborted) return;
+
+      const subEntries = subData.entries || [];
+      const files = subEntries.filter((e) => !e.is_dir && isImageOrVideo(e.filename));
+      files.sort((a, b) => naturalCompare(a.filename, b.filename));
+
+      if (files.length > 0) {
+        const group = {
+          folderName: folder.name,
+          folderPath: folder.path,
+          files: files
+        };
+        folderGroupsMap.set(folder.path, group);
+        if (onFolderDiscovered) {
+          onFolderDiscovered(group);
+        }
+      }
+
+      // Collect any nested child directories
+      const childDirs = subEntries
+        .filter((c) => c.is_dir && c.href && !seenUrls.has(c.href))
+        .map((c) => ({
+          name: c.filename,
+          path: `${folder.path}/${c.filename}`,
+          url: c.href
+        }));
+
+      // Sort child directories naturally from first to last
+      childDirs.sort(naturalCompare);
+      for (const child of childDirs) {
+        seenUrls.add(child.url);
+      }
+
+      // Recursively crawl children sequentially from first to last
+      for (let i = 0; i < childDirs.length; i++) {
+        if (signal && signal.aborted) break;
+        await crawlFolder(childDirs[i], childDirs, i);
+      }
+    } catch (_) {}
   }
 
-  if (queue.length > 0) {
-    const workers = Array.from({ length: MAX_CONCURRENT }, () => crawlWorker());
-    await Promise.all(workers);
+  // Sequentially crawl top-level subfolders from first to last
+  for (let i = 0; i < initialSubfolders.length; i++) {
+    if (signal && signal.aborted) break;
+    await crawlFolder(initialSubfolders[i], initialSubfolders, i);
   }
 
-  const paths = Array.from(folderGroupsMap.keys()).sort((a, b) =>
-    a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
-  );
+  const paths = Array.from(folderGroupsMap.keys()).sort(naturalCompare);
+  const result = paths.map((p) => folderGroupsMap.get(p));
 
-  return paths.map((p) => folderGroupsMap.get(p));
+  const cleanUrl = getCleanDropboxUrl(rootUrl);
+  if (result.length > 0) {
+    if (dropboxGalleryCache.size >= 50) {
+      const oldestKey = dropboxGalleryCache.keys().next().value;
+      if (oldestKey) dropboxGalleryCache.delete(oldestKey);
+    }
+    dropboxGalleryCache.set(cleanUrl, {
+      folderName: rootName,
+      groups: result,
+    });
+  }
+
+  return result;
 }
 
 /**
@@ -744,6 +978,7 @@ export async function openDropboxGallery(dropboxUrl, galleryTitle, folderStack =
   }
 
   const signal = createExternalAbortSignal();
+  clearDropboxMediaQueue();
 
   const existingBackBtn = document.getElementById("dropbox-carousel-back-btn");
   if (existingBackBtn) existingBackBtn.remove();
@@ -751,6 +986,42 @@ export async function openDropboxGallery(dropboxUrl, galleryTitle, folderStack =
   if (state.currentZipObjectUrls && state.currentZipObjectUrls.length > 0) {
     state.currentZipObjectUrls.forEach((url) => URL.revokeObjectURL(url));
     state.currentZipObjectUrls = [];
+  }
+
+  const isFolder = isDropboxFolderUrl(dropboxUrl);
+  const cleanUrl = getCleanDropboxUrl(dropboxUrl);
+
+  if (isFolder && dropboxGalleryCache.has(cleanUrl)) {
+    const cached = dropboxGalleryCache.get(cleanUrl);
+    if (cached && cached.groups && cached.groups.length > 0) {
+      if (signal && signal.aborted) return;
+      const title = cached.archiveName || cached.folderName || galleryTitle || "Dropbox Gallery";
+      setZipNavVisible(false, true);
+      if (zipViewer) zipViewer.classList.remove("hidden");
+      if (zipTitle) zipTitle.textContent = title;
+      if (zipIndicator) {
+        zipIndicator.textContent = "";
+        zipIndicator.style.display = "";
+      }
+      const convertToMatrixGroup = (group) => ({
+        folderName: group.folderName,
+        folderPath: group.folderPath,
+        files: group.files.map((f, idx) => ({
+          filename: f.filename,
+          folder: group.folderPath,
+          size: f.bytes || f.size || 0,
+          link: f.href || f.rawUrl || f.link || "",
+          loadMedia: (container, sig) => {
+            container.dataset.fileIdx = String(idx);
+            loadAndDisplayDropboxItem(container, f, sig);
+          }
+        }))
+      });
+
+      const folderGroups = cached.groups.map(convertToMatrixGroup);
+      render2DMatrixGallery(folderGroups, { galleryTitle: title, signal });
+      return;
+    }
   }
 
   setZipNavVisible(false, true);
@@ -766,8 +1037,6 @@ export async function openDropboxGallery(dropboxUrl, galleryTitle, folderStack =
     const pt = document.getElementById("zip-progress-text");
     renderArchiveProgress(pt, "Connecting...", null, galleryTitle || "Dropbox Gallery");
   }
-
-  const isFolder = isDropboxFolderUrl(dropboxUrl);
 
   if (!isFolder) {
     if (signal && signal.aborted) return;
@@ -878,22 +1147,34 @@ export async function openDropboxGallery(dropboxUrl, galleryTitle, folderStack =
     }
 
     const currentFolderName = data.folder_name || galleryTitle || "Dropbox Folder";
+    const naturalCompare = (a, b) => {
+      const strA = (typeof a === "string" ? a : (a.path || a.filename || "")).toLowerCase();
+      const strB = (typeof b === "string" ? b : (b.path || b.filename || "")).toLowerCase();
+      return strA.localeCompare(strB, undefined, { numeric: true, sensitivity: "base" });
+    };
+
     const rootFiles = entries.filter((e) => !e.is_dir && isImageOrVideo(e.filename));
+    rootFiles.sort(naturalCompare);
     const subfolderEntries = entries.filter((e) => e.is_dir && e.href);
+    subfolderEntries.sort(naturalCompare);
 
     const convertToMatrixGroup = (group) => ({
       folderName: group.folderName,
       folderPath: group.folderPath,
-      files: group.files.map((f, idx) => ({
-        filename: f.filename,
-        folder: group.folderPath,
-        size: f.bytes || 0,
-        link: f.href || f.rawUrl || "",
-        loadMedia: (container, sig) => {
-          container.dataset.fileIdx = String(idx);
-          loadAndDisplayDropboxItem(container, f, sig);
-        }
-      }))
+      files: group.files.map((f, idx) => {
+        const fileSize = f.bytes || f.size || 0;
+        return {
+          filename: f.filename,
+          folder: group.folderPath,
+          size: fileSize,
+          bytes: fileSize,
+          link: f.href || f.rawUrl || "",
+          loadMedia: (container, sig) => {
+            container.dataset.fileIdx = String(idx);
+            loadAndDisplayDropboxItem(container, { ...f, size: fileSize, bytes: fileSize }, sig);
+          }
+        };
+      })
     });
 
     let galleryMounted = false;
@@ -1248,6 +1529,174 @@ function renderDropboxFolderBrowser(data, folderUrl, currentFolderName, folderSt
   zipContent.appendChild(root);
 }
 
+const DROPBOX_MEDIA_CONCURRENCY = 3;
+let activeDropboxMediaLoads = 0;
+const dropboxMediaQueue = [];
+
+export function clearDropboxMediaQueue() {
+  dropboxMediaQueue.forEach((item) => {
+    try { item.resolve(); } catch (_) {}
+  });
+  dropboxMediaQueue.length = 0;
+  activeDropboxMediaLoads = 0;
+}
+
+export function cancelDropboxQueuedTask(container) {
+  if (!container) return;
+  const fileIdx = container.dataset.fileIdx;
+  const folder = container.dataset.folder || "";
+  for (let i = 0; i < dropboxMediaQueue.length; i++) {
+    const c = dropboxMediaQueue[i].container;
+    if (c === container || (c && fileIdx && c.dataset.fileIdx === fileIdx && (c.dataset.folder || "") === folder)) {
+      const task = dropboxMediaQueue.splice(i, 1)[0];
+      try { task.resolve(); } catch (_) {}
+      i--;
+    }
+  }
+}
+
+function queueDropboxMediaLoad(container, taskFn) {
+  return new Promise((resolve, reject) => {
+    const fileIdx = container?.dataset?.fileIdx;
+    const folder = container?.dataset?.folder || "";
+    const existingIdx = dropboxMediaQueue.findIndex((t) => {
+      const c = t.container;
+      return c === container || (c && fileIdx && c.dataset.fileIdx === fileIdx && (c.dataset.folder || "") === folder);
+    });
+    if (existingIdx !== -1) {
+      const old = dropboxMediaQueue.splice(existingIdx, 1)[0];
+      try { old.resolve(); } catch (_) {}
+    }
+
+    const active = typeof getActiveMediaItem === "function" ? getActiveMediaItem() : null;
+    const isActive = active && (active.item === container || (
+      active.item?.dataset?.fileIdx === container?.dataset?.fileIdx &&
+      (active.item?.dataset?.folder || "") === (container?.dataset?.folder || "")
+    ));
+
+    if (isActive) {
+      dropboxMediaQueue.unshift({ container, taskFn, resolve, reject });
+    } else {
+      dropboxMediaQueue.push({ container, taskFn, resolve, reject });
+    }
+    processDropboxMediaQueue();
+  });
+}
+
+function processDropboxMediaQueue() {
+  while (activeDropboxMediaLoads < DROPBOX_MEDIA_CONCURRENCY && dropboxMediaQueue.length > 0) {
+    const active = typeof getActiveMediaItem === "function" ? getActiveMediaItem() : null;
+    let bestIndex = 0;
+
+    if (active && active.item) {
+      const activeFileIdx = parseInt(active.item.dataset.fileIdx || "0", 10) || 0;
+      const activeFolder = active.item.dataset.folder || "";
+      let minDistance = Infinity;
+
+      for (let i = 0; i < dropboxMediaQueue.length; i++) {
+        const item = dropboxMediaQueue[i].container;
+        if (!item || !item.isConnected) {
+          dropboxMediaQueue.splice(i, 1)[0].resolve();
+          i--;
+          continue;
+        }
+        if (item.dataset.loaded === "true") {
+          dropboxMediaQueue.splice(i, 1)[0].resolve();
+          i--;
+          continue;
+        }
+
+        const itemFileIdx = parseInt(item.dataset.fileIdx || "0", 10) || 0;
+        const itemFolder = item.dataset.folder || "";
+        const sameFolder = itemFolder === activeFolder;
+
+        let dist = sameFolder ? Math.abs(itemFileIdx - activeFileIdx) : 1000 + Math.abs(itemFileIdx);
+        if (item === active.item || (sameFolder && itemFileIdx === activeFileIdx)) {
+          dist = -1;
+        }
+
+        if (dist < minDistance) {
+          minDistance = dist;
+          bestIndex = i;
+          if (dist === -1) break;
+        }
+      }
+    }
+
+    if (dropboxMediaQueue.length === 0) break;
+    const nextTask = dropboxMediaQueue.splice(bestIndex, 1)[0];
+    if (!nextTask) break;
+
+    activeDropboxMediaLoads++;
+    Promise.resolve()
+      .then(() => nextTask.taskFn())
+      .then(
+        (val) => {
+          activeDropboxMediaLoads--;
+          nextTask.resolve(val);
+          processDropboxMediaQueue();
+        },
+        (err) => {
+          activeDropboxMediaLoads--;
+          nextTask.reject(err);
+          processDropboxMediaQueue();
+        }
+      );
+  }
+}
+
+function markDropboxItemFailed(allMatchingContainers, file, streamUrl, targetUrl, type, initialStatus, signal, retryAction) {
+  allMatchingContainers.forEach((target) => {
+    delete target.dataset.loading;
+    target.dataset.failed = "true";
+    delete target.dataset.loaded;
+    cleanupContainerMedia(target);
+
+    const overlay = target.querySelector(".media-progress");
+    if (overlay) {
+      overlay.style.display = "flex";
+      showMediaUnavailableWarning(overlay, {
+        type,
+        filename: file.filename,
+        errorStatus: initialStatus || "404",
+        message: initialStatus === "429" ? "Too Many Requests (Rate Limited)" : (initialStatus === "503" ? "Service Unavailable" : "Media Unavailable"),
+        externalUrl: targetUrl,
+        onRetry: retryAction
+      });
+    }
+  });
+
+  // Non-blocking background HEAD probe to refine error status (e.g. 429 vs 404)
+  if (streamUrl) {
+    fetch(streamUrl, { method: "HEAD", signal })
+      .then((probeRes) => {
+        if (!probeRes.ok) {
+          const refinedStatus = String(probeRes.status);
+          const refinedMsg = refinedStatus === "429"
+            ? "Too Many Requests (Rate Limited)"
+            : (refinedStatus === "404" ? "File Not Found" : `Server Error (HTTP ${refinedStatus})`);
+
+          allMatchingContainers.forEach((target) => {
+            if (target.dataset.failed === "true") {
+              const overlay = target.querySelector(".media-progress");
+              if (overlay) {
+                showMediaUnavailableWarning(overlay, {
+                  type,
+                  filename: file.filename,
+                  errorStatus: refinedStatus,
+                  message: refinedMsg,
+                  externalUrl: targetUrl,
+                  onRetry: retryAction
+                });
+              }
+            }
+          });
+        }
+      })
+      .catch(() => {});
+  }
+}
+
 /**
  * Loads an individual media item (streaming video or lazy loading image) into its slide.
  */
@@ -1256,6 +1705,7 @@ function loadAndDisplayDropboxItem(container, file, signal) {
 
   if (container.dataset.loaded === "true") return;
   if (container.dataset.loading === "true") return;
+  if (container.dataset.failed === "true") return;
 
   const fileIdxStr = container.dataset.fileIdx;
   const parentRow = container.closest(".zip-folder-row");
@@ -1267,6 +1717,7 @@ function loadAndDisplayDropboxItem(container, file, signal) {
   if (alreadyLoadedContainer) {
     container.dataset.loaded = "true";
     delete container.dataset.loading;
+    delete container.dataset.failed;
     const existingMedia = alreadyLoadedContainer.querySelector("img, video, canvas");
     if (existingMedia) {
       cleanupContainerMedia(container);
@@ -1285,23 +1736,11 @@ function loadAndDisplayDropboxItem(container, file, signal) {
     return;
   }
 
-  allMatchingContainers.forEach((c) => {
-    c.dataset.loading = "true";
-    delete c.dataset.loaded;
-    const overlay = c.querySelector(".media-progress");
-    if (overlay) {
-      overlay.style.display = "flex";
-      const displayName = file.path || file.filename;
-      renderMediaProgress(overlay, "Loading...", null, displayName, file.bytes ? formatBytes(file.bytes) : "", "");
-    }
-  });
-
-  const ext = file.filename.split(".").pop().toLowerCase();
-  const isVideo = ["mp4", "webm", "mov"].includes(ext);
-  const isGif = ext === "gif";
-
   let targetUrl = file.rawUrl || file.href || "";
   if (targetUrl) {
+    if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+      targetUrl = `https://www.dropbox.com${targetUrl.startsWith("/") ? "" : "/"}${targetUrl}`;
+    }
     try {
       const u = new URL(targetUrl);
       u.searchParams.set("raw", "1");
@@ -1309,199 +1748,251 @@ function loadAndDisplayDropboxItem(container, file, signal) {
       targetUrl = u.toString();
     } catch (_) {}
   }
-  const streamUrl = `${PROXY_URL}/proxy?url=${encodeURIComponent(targetUrl)}`;
+  const streamUrl = `${PROXY_URL}/dropbox?url=${encodeURIComponent(targetUrl)}`;
 
-  if (isVideo) {
-    allMatchingContainers.forEach((c) => {
-      cleanupContainerMedia(c);
-      if (c.dataset.isClone === "true") {
-        const placeholder = document.createElement("div");
-        placeholder.className = "post-media";
-        placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
-        placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
-        c.appendChild(placeholder);
-        return;
-      }
+  const ext = file.filename.split(".").pop().toLowerCase();
+  const isVideo = ["mp4", "webm", "mov"].includes(ext);
+  const isGif = ext === "gif";
+  const mediaType = isVideo ? "video" : (isGif ? "image" : "image");
 
-      const video = document.createElement("video");
-      video.playsInline = true;
-      video.setAttribute("playsinline", "");
-      video.setAttribute("webkit-playsinline", "");
-      video.loop = true;
-      video.muted = true;
-      video.style.maxWidth = "100%";
-      video.style.maxHeight = "100%";
-      video.style.objectFit = "contain";
-      video.preload = "metadata";
-      c.appendChild(video);
-      attachCustomVideoPlayer(video, c);
-
-      const onReady = () => {
-        allMatchingContainers.forEach((target) => {
-          target.dataset.loaded = "true";
-          delete target.dataset.loading;
-          const o = target.querySelector(".media-progress");
-          if (o) o.style.display = "none";
-        });
-      };
-
-      video.addEventListener("canplay", onReady, { once: true });
-      video.addEventListener("loadedmetadata", onReady, { once: true });
-
-      video.onerror = async () => {
-        if (signal && signal.aborted) return;
-        allMatchingContainers.forEach((target) => {
-          delete target.dataset.loading;
-          delete target.dataset.loaded;
-          cleanupContainerMedia(target);
-        });
-
-        let errorStatus = "500";
-        let errorMsg = "Failed to load video stream";
-        try {
-          const probeRes = await fetch(streamUrl, { method: "HEAD", signal });
-          if (!probeRes.ok) {
-            errorStatus = String(probeRes.status);
-            errorMsg = probeRes.status === 404 ? "File not found" : (probeRes.status === 429 ? "Too many requests" : `Server error (HTTP ${probeRes.status})`);
-          }
-        } catch (_) {}
-
-        allMatchingContainers.forEach((target) => {
-          const overlay = target.querySelector(".media-progress");
-          if (overlay) {
-            overlay.style.display = "flex";
-            showMediaUnavailableWarning(overlay, {
-              type: "video",
-              filename: file.filename,
-              errorStatus: errorStatus,
-              message: errorMsg,
-              externalUrl: targetUrl,
-              onRetry: () => {
-                allMatchingContainers.forEach((t) => {
-                  cleanupContainerMedia(t);
-                  delete t.dataset.loading;
-                  delete t.dataset.loaded;
-                });
-                loadAndDisplayDropboxItem(container, file, signal);
-              }
-            });
-          }
-        });
-      };
-
-      video.src = streamUrl;
+  const retryAction = () => {
+    allMatchingContainers.forEach((t) => {
+      cleanupContainerMedia(t);
+      delete t.dataset.loading;
+      delete t.dataset.loaded;
+      delete t.dataset.failed;
     });
-  } else if (isGif) {
-    allMatchingContainers.forEach((c) => {
-      cleanupContainerMedia(c);
-      if (c.dataset.isClone === "true") {
-        const placeholder = document.createElement("div");
-        placeholder.className = "post-media";
-        placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
-        placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
-        c.appendChild(placeholder);
-        c.dataset.loaded = "true";
-        delete c.dataset.loading;
-        const o = c.querySelector(".media-progress");
-        if (o) o.style.display = "none";
-        return;
-      }
+    loadAndDisplayDropboxItem(container, file, signal);
+  };
 
-      const overlay = c.querySelector(".media-progress");
-      loadGifPlayer({
-        item: c,
-        url: streamUrl,
+  const alreadyFailedContainer = allMatchingContainers.find((c) => c.dataset.failed === "true");
+  if (alreadyFailedContainer) {
+    container.dataset.failed = "true";
+    delete container.dataset.loading;
+    const overlay = container.querySelector(".media-progress");
+    if (overlay) {
+      overlay.style.display = "flex";
+      showMediaUnavailableWarning(overlay, {
+        type: mediaType,
         filename: file.filename,
-        progressOverlay: overlay,
-        onRetry: () => {
-          allMatchingContainers.forEach((t) => {
-            cleanupContainerMedia(t);
-            delete t.dataset.loading;
-            delete t.dataset.loaded;
-          });
-          loadAndDisplayDropboxItem(container, file, signal);
-        },
-        playbackObserver,
-        signal,
-      }).then(() => {
-        if (signal && signal.aborted) return;
-        allMatchingContainers.forEach((target) => {
-          target.dataset.loaded = "true";
-          delete target.dataset.loading;
-          const o = target.querySelector(".media-progress");
-          if (o) o.style.display = "none";
-        });
-      }).catch((err) => {
-        if (signal && signal.aborted) return;
-        console.warn(`[Dropbox] Failed to load GIF ${file.filename}:`, err);
+        errorStatus: "404",
+        message: "Media Unavailable",
+        externalUrl: targetUrl,
+        onRetry: retryAction
       });
-    });
-  } else {
-    const img = new Image();
-    img.style.maxWidth = "100%";
-    img.style.maxHeight = "100%";
-    img.style.objectFit = "contain";
-    img.decoding = "async";
+    }
+    return;
+  }
 
-    img.onload = () => {
-      if (signal && signal.aborted) return;
-      allMatchingContainers.forEach((target) => {
-        target.dataset.loaded = "true";
-        delete target.dataset.loading;
-        cleanupContainerMedia(target);
-        target.appendChild(img.cloneNode(true));
-        const o = target.querySelector(".media-progress");
-        if (o) o.style.display = "none";
-      });
-    };
+  allMatchingContainers.forEach((c) => {
+    c.dataset.loading = "true";
+    delete c.dataset.loaded;
+    delete c.dataset.failed;
+    const overlay = c.querySelector(".media-progress");
+    if (overlay) {
+      overlay.style.display = "flex";
+      const displayName = file.path || file.filename;
+      const totalSize = file.bytes || file.size || (c.dataset.size ? parseInt(c.dataset.size, 10) : 0);
+      const totalStr = totalSize > 0 ? formatBytes(totalSize) : "";
+      renderMediaProgress(overlay, "Loading...", null, displayName, "", totalStr);
+    }
+  });
 
-    img.onerror = async () => {
-      if (signal && signal.aborted) return;
-      allMatchingContainers.forEach((target) => {
-        delete target.dataset.loading;
-        delete target.dataset.loaded;
-        cleanupContainerMedia(target);
-      });
+  queueDropboxMediaLoad(container, () => {
+    return new Promise((resolve) => {
+      if (container.dataset.loaded === "true" || (signal && signal.aborted)) {
+        return resolve();
+      }
 
-      let errorStatus = "500";
-      let errorMsg = "Failed to load image";
-      try {
-        const probeRes = await fetch(streamUrl, { method: "HEAD", signal });
-        if (!probeRes.ok) {
-          errorStatus = String(probeRes.status);
-          errorMsg = probeRes.status === 404 ? "File not found" : (probeRes.status === 429 ? "Too many requests" : `Server error (HTTP ${probeRes.status})`);
-        } else {
-          const ct = probeRes.headers.get("content-type") || "";
-          if (ct.includes("text/html")) {
-            errorStatus = "500";
-            errorMsg = "Dropbox returned HTML instead of image bytes";
-          }
+      let timeoutId = setTimeout(() => {
+        resolve();
+      }, 20000);
+
+      const done = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
         }
-      } catch (_) {}
+        resolve();
+      };
 
-      allMatchingContainers.forEach((target) => {
-        const overlay = target.querySelector(".media-progress");
-        if (overlay) {
-          overlay.style.display = "flex";
-          showMediaUnavailableWarning(overlay, {
-            type: "image",
+      if (isVideo) {
+        allMatchingContainers.forEach((c) => {
+          cleanupContainerMedia(c);
+          if (c.dataset.isClone === "true") {
+            const placeholder = document.createElement("div");
+            placeholder.className = "post-media";
+            placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+            placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+            c.appendChild(placeholder);
+            return;
+          }
+
+          const video = document.createElement("video");
+          video.playsInline = true;
+          video.setAttribute("playsinline", "");
+          video.setAttribute("webkit-playsinline", "");
+          video.loop = true;
+          video.muted = true;
+          video.style.maxWidth = "100%";
+          video.style.maxHeight = "100%";
+          video.style.objectFit = "contain";
+          video.preload = "metadata";
+          c.appendChild(video);
+          attachCustomVideoPlayer(video, c);
+
+          const onReady = () => {
+            allMatchingContainers.forEach((target) => {
+              target.dataset.loaded = "true";
+              delete target.dataset.loading;
+              delete target.dataset.failed;
+              const o = target.querySelector(".media-progress");
+              if (o) o.style.display = "none";
+            });
+            done();
+          };
+
+          video.addEventListener("canplay", onReady, { once: true });
+          video.addEventListener("loadedmetadata", onReady, { once: true });
+
+          video.onerror = () => {
+            markDropboxItemFailed(allMatchingContainers, file, streamUrl, targetUrl, "video", "500", signal, retryAction);
+            done();
+          };
+
+          video.src = streamUrl;
+        });
+      } else if (isGif) {
+        let loadedOrFailed = false;
+        allMatchingContainers.forEach((c) => {
+          cleanupContainerMedia(c);
+          if (c.dataset.isClone === "true") {
+            const placeholder = document.createElement("div");
+            placeholder.className = "post-media";
+            placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+            placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+            c.appendChild(placeholder);
+            c.dataset.loaded = "true";
+            delete c.dataset.loading;
+            delete c.dataset.failed;
+            const o = c.querySelector(".media-progress");
+            if (o) o.style.display = "none";
+            return;
+          }
+
+          const overlay = c.querySelector(".media-progress");
+          loadGifPlayer({
+            item: c,
+            url: streamUrl,
             filename: file.filename,
-            errorStatus: errorStatus,
-            message: errorMsg,
-            externalUrl: targetUrl,
-            onRetry: () => {
-              allMatchingContainers.forEach((t) => {
-                cleanupContainerMedia(t);
-                delete t.dataset.loading;
-                delete t.dataset.loaded;
+            progressOverlay: overlay,
+            onRetry: retryAction,
+            playbackObserver,
+            signal,
+          }).then(() => {
+            if (!loadedOrFailed) {
+              loadedOrFailed = true;
+              allMatchingContainers.forEach((target) => {
+                target.dataset.loaded = "true";
+                delete target.dataset.loading;
+                delete target.dataset.failed;
+                const o = target.querySelector(".media-progress");
+                if (o) o.style.display = "none";
               });
-              loadAndDisplayDropboxItem(container, file, signal);
+              done();
+            }
+          }).catch((err) => {
+            if (!loadedOrFailed) {
+              loadedOrFailed = true;
+              console.warn(`[Dropbox] Failed to load GIF ${file.filename}:`, err);
+              markDropboxItemFailed(allMatchingContainers, file, streamUrl, targetUrl, "image", "404", signal, retryAction);
+              done();
             }
           });
-        }
-      });
-    };
+        });
+      } else {
+        const totalSize = file.bytes || file.size || (container.dataset.size ? parseInt(container.dataset.size, 10) : 0);
+        const displayName = file.path || file.filename;
 
-    img.src = streamUrl;
-  }
+        fetch(streamUrl, { signal })
+          .then(async (res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const cl = parseInt(res.headers.get("content-length") || "0", 10);
+            const knownTotal = cl > 0 ? cl : totalSize;
+            const totalStr = knownTotal > 0 ? formatBytes(knownTotal) : "";
+
+            const reader = res.body?.getReader();
+            if (!reader) {
+              const blob = await res.blob();
+              return blob;
+            }
+
+            const chunks = [];
+            let loaded = 0;
+            let lastUpdate = 0;
+
+            while (true) {
+              if (signal && signal.aborted) throw new Error("Aborted");
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+              loaded += value.length;
+
+              const now = Date.now();
+              if (now - lastUpdate > 150) {
+                lastUpdate = now;
+                const pct = knownTotal > 0 ? Math.min(100, Math.round((loaded / knownTotal) * 100)) : null;
+                const loadedStr = formatBytes(loaded);
+                allMatchingContainers.forEach((c) => {
+                  const o = c.querySelector(".media-progress");
+                  if (o) renderMediaProgress(o, "Loading...", pct, displayName, loadedStr, totalStr);
+                });
+              }
+            }
+
+            return new Blob(chunks, { type: res.headers.get("content-type") || "image/jpeg" });
+          })
+          .then((blob) => {
+            if (signal && signal.aborted) {
+              done();
+              return;
+            }
+            const blobUrl = URL.createObjectURL(blob);
+            const img = new Image();
+            img.className = "post-media";
+            img.style.maxWidth = "100%";
+            img.style.maxHeight = "100%";
+            img.style.objectFit = "contain";
+            img.decoding = "async";
+
+            img.onload = () => {
+              allMatchingContainers.forEach((target) => {
+                target.dataset.loaded = "true";
+                delete target.dataset.loading;
+                delete target.dataset.failed;
+                cleanupContainerMedia(target);
+                target.appendChild(img.cloneNode(true));
+                const o = target.querySelector(".media-progress");
+                if (o) o.style.display = "none";
+              });
+              done();
+            };
+            img.onerror = () => {
+              markDropboxItemFailed(allMatchingContainers, file, streamUrl, targetUrl, "image", "404", signal, retryAction);
+              done();
+            };
+            img.src = blobUrl;
+          })
+          .catch((err) => {
+            if (signal && signal.aborted) {
+              done();
+              return;
+            }
+            console.warn(`[Dropbox] Image fetch failed for ${displayName}:`, err);
+            markDropboxItemFailed(allMatchingContainers, file, streamUrl, targetUrl, "image", "404", signal, retryAction);
+            done();
+          });
+      }
+    });
+  });
 }

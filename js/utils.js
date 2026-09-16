@@ -216,15 +216,24 @@ export function renderMediaProgress(container, status = "Loading...", percent = 
   container.classList.add("media-loading");
   container.style.pointerEvents = "none";
 
+  if (!totalStr || totalStr === "...") {
+    const rawSize = container.dataset?.size || container.closest?.(".media-item")?.dataset?.size;
+    if (rawSize && !isNaN(Number(rawSize)) && Number(rawSize) > 0) {
+      totalStr = formatBytes(Number(rawSize));
+    }
+  }
+
   const showPct = percent !== null && percent !== undefined && !isNaN(percent) && (percent > 0 || (loadedStr && loadedStr !== "0 B" && loadedStr !== "Waiting"));
   const pctText = showPct ? ` ${percent}%` : "";
   let sizeText = "";
-  if (loadedStr && totalStr && totalStr !== "..." && loadedStr !== "Waiting") {
-    sizeText = `${loadedStr} / ${totalStr}`;
+  if (totalStr && totalStr !== "...") {
+    if (loadedStr && loadedStr !== "Waiting" && loadedStr !== "0 B") {
+      sizeText = `${loadedStr} / ${totalStr}`;
+    } else {
+      sizeText = totalStr;
+    }
   } else if (loadedStr && loadedStr !== "0 B" && loadedStr !== "Waiting") {
     sizeText = loadedStr;
-  } else if (totalStr && totalStr !== "...") {
-    sizeText = totalStr;
   }
 
   const filenameHtml = filename
@@ -248,12 +257,14 @@ export function renderArchiveProgress(container, status = "Loading...", percent 
   const showPct = percent !== null && percent !== undefined && !isNaN(percent) && (percent > 0 || (loadedStr && loadedStr !== "0 B"));
   const pctText = showPct ? ` ${percent}%` : "";
   let sizeText = "";
-  if (loadedStr && totalStr && totalStr !== "...") {
-    sizeText = `${loadedStr} / ${totalStr}`;
+  if (totalStr && totalStr !== "...") {
+    if (loadedStr && loadedStr !== "Waiting" && loadedStr !== "0 B") {
+      sizeText = `${loadedStr} / ${totalStr}`;
+    } else {
+      sizeText = totalStr;
+    }
   } else if (loadedStr && loadedStr !== "0 B") {
     sizeText = loadedStr;
-  } else if (totalStr && totalStr !== "...") {
-    sizeText = totalStr;
   }
 
   const titleHtml = title

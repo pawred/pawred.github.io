@@ -949,7 +949,20 @@ export async function loadGifPlayer({
     item.appendChild(posterImg);
   }
 
-  renderMediaProgress(progressOverlay, "Loading...", null, filename, "", "");
+  let knownSize = 0;
+  if (buffer) {
+    knownSize = buffer.byteLength || (buffer.buffer ? buffer.buffer.byteLength : 0) || 0;
+  } else if (blob) {
+    knownSize = blob.size || 0;
+  } else if (item.dataset.size) {
+    knownSize = parseInt(item.dataset.size, 10) || 0;
+  }
+
+  const initialTotalStr = knownSize > 0 ? formatBytes(knownSize) : "";
+  const initialLoadedStr = (buffer || blob) && knownSize > 0 ? initialTotalStr : "";
+  const initialStatus = (buffer || blob) ? "Decoding..." : "Loading...";
+
+  renderMediaProgress(progressOverlay, initialStatus, null, filename, initialLoadedStr, initialTotalStr);
 
   try {
     let fullBuffer;
@@ -961,20 +974,31 @@ export async function loadGifPlayer({
     if (buffer) {
       const u8 = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
       fullBuffer = u8.slice();
+      const sizeStr = formatBytes(fullBuffer.byteLength);
+      renderMediaProgress(progressOverlay, "Decoding...", 100, filename, sizeStr, sizeStr);
     } else {
       const response = await fetch(url, { signal });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const totalSize = parseInt(response.headers.get("content-length") || "0", 10);
+      const contentType = (response.headers.get("content-type") || "").toLowerCase();
+      if (contentType.includes("application/zip") || (contentType.includes("text/html") && !url.includes("data:"))) {
+        throw new Error(`Invalid GIF response content-type (${contentType}). Cannot decode non-image as GIF.`);
+      }
 
-      if (totalSize > 0 && totalSize < 3 * 1024 * 1024) {
+      const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
+      const totalSize = contentLength > 0 ? contentLength : knownSize;
+      if (totalSize > 80 * 1024 * 1024) {
+        throw new Error(`GIF exceeds 80MB size limit (${formatBytes(totalSize)})`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
         const ab = await response.arrayBuffer();
         if (signal.aborted) return;
         fullBuffer = new Uint8Array(ab);
       } else {
-        const reader = response.body.getReader();
         const chunks = [];
         let downloadedBytes = 0;
         let lastUiUpdate = 0;
@@ -987,9 +1011,13 @@ export async function loadGifPlayer({
 
           chunks.push(value);
           downloadedBytes += value.length;
+          if (downloadedBytes > 80 * 1024 * 1024) {
+            try { reader.cancel(); } catch (_) {}
+            throw new Error("GIF exceeded 80MB download limit");
+          }
 
           const now = Date.now();
-          if (now - lastUiUpdate > 120) {
+          if (now - lastUiUpdate > 100) {
             lastUiUpdate = now;
             if (totalSize > 0) {
               const percent = Math.min(100, Math.round((downloadedBytes / totalSize) * 100));
@@ -1011,6 +1039,9 @@ export async function loadGifPlayer({
           offset += chunk.length;
         }
       }
+
+      const finalSizeStr = formatBytes(fullBuffer.byteLength);
+      renderMediaProgress(progressOverlay, "Decoding...", 100, filename, finalSizeStr, totalSize > 0 ? formatBytes(totalSize) : finalSizeStr);
     }
 
     const gifReader = new GifReader(fullBuffer);
@@ -1081,6 +1112,51 @@ export async function loadGifPlayer({
     }
 
     if (signal.aborted) return;
+
+    const estimatedUncompressedBytes = width * height * 4 * numFrames;
+    const isTooHeavyForWorker = !useImageDecoder && (estimatedUncompressedBytes > 50 * 1024 * 1024 || numFrames > 80);
+
+    if (isTooHeavyForWorker) {
+      if (posterImg) {
+        posterImg.remove();
+        posterImg = null;
+      }
+      const gifBlob = new Blob([fullBuffer], { type: "image/gif" });
+      const blobUrl = URL.createObjectURL(gifBlob);
+      item._blobUrl = blobUrl;
+
+      const img = document.createElement("img");
+      img.className = "post-media";
+      img.loading = "eager";
+      img.src = blobUrl;
+      item._cleanupGif = () => {
+        if (item._blobUrl) {
+          URL.revokeObjectURL(item._blobUrl);
+          item._blobUrl = null;
+        }
+      };
+
+      img.onload = () => {
+        item.dataset.loaded = "true";
+        delete item.dataset.loading;
+        if (progressOverlay) progressOverlay.style.display = "none";
+        if (typeof syncCarouselClones === "function") syncCarouselClones(item);
+      };
+      img.onerror = () => {
+        delete item.dataset.loading;
+        delete item.dataset.loaded;
+        if (progressOverlay) progressOverlay.style.display = "flex";
+        showMediaUnavailableWarning(progressOverlay, {
+          type: "image",
+          filename,
+          errorStatus: "404",
+          onRetry,
+        });
+      };
+
+      item.appendChild(img);
+      return;
+    }
 
     if (useImageDecoder) {
       const decoder = new ImageDecoder({

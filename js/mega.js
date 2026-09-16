@@ -613,8 +613,8 @@ export async function handleMegaSingleFileEmbed(item, parsed, progressOverlay, p
           "Loading...",
           null,
           filename,
-          totalSize > 0 ? formatBytes(totalSize) : "Connecting...",
-          ""
+          "",
+          totalSize > 0 ? formatBytes(totalSize) : ""
         );
       }
       const blob = await downloadAndDecryptMegaPayload(
@@ -685,8 +685,8 @@ export async function downloadAndAttachSingleMegaFile(item, folderId, singleFile
         "Loading...",
         null,
         singleFile.name,
-        totalSize > 0 ? formatBytes(totalSize) : "Connecting...",
-        ""
+        "",
+        totalSize > 0 ? formatBytes(totalSize) : ""
       );
     }
 
@@ -1293,7 +1293,7 @@ async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, si
     }
 
     if (!blobUrl) {
-      if (overlay) renderMediaProgress(overlay, "Loading...", 0, file.name, "Connecting...", file.size ? formatBytes(file.size) : "");
+      if (overlay) renderMediaProgress(overlay, "Loading...", 0, file.name, "", file.size ? formatBytes(file.size) : "");
 
       let dlUrl = file.cachedDlUrl;
       if (!dlUrl) {
@@ -1314,7 +1314,7 @@ async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, si
           "Loading...",
           0,
           file.name,
-          "0 B",
+          "",
           totalSize > 0 ? formatBytes(totalSize) : "..."
         );
       }
