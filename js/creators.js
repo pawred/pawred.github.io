@@ -98,7 +98,7 @@ export function renderServiceFilters(site = state.currentSite, force = false) {
 export function syncDiscoveredServices(discoveredServices, site = state.currentSite) {
   if (!serviceFilterSelect || currentRenderedFilterSite !== site) return;
   const existingValues = new Set(
-    Array.from(serviceFilterSelect.querySelectorAll("input:checked")).map((cb) => cb.value)
+    Array.from(serviceFilterSelect.querySelectorAll("input")).map((cb) => cb.value)
   );
 
   discoveredServices.forEach((service) => {
