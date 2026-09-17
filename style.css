@@ -248,13 +248,27 @@ textarea,
   display: none;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   text-align: center;
   background: #070707;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 40px 20px;
+  box-sizing: border-box;
 }
 
 #welcome-screen.active {
   display: flex;
+}
+
+.welcome-content {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 520px;
+  width: 100%;
 }
 
 #welcome-screen h1 {
@@ -269,8 +283,48 @@ textarea,
 
 #welcome-screen p {
   color: #ccc;
-  margin-bottom: 40px;
+  margin-bottom: 24px;
   font-size: 1.2rem;
+}
+
+.welcome-warning-18 {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: 440px;
+  width: 100%;
+  margin: 0 auto 28px;
+  padding: 12px 18px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 12px;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.warning-badge-18 {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #dc2626;
+  color: #ffffff;
+  font-weight: 800;
+  font-size: 0.92rem;
+  padding: 4px 10px;
+  border-radius: 8px;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.35);
+}
+
+.warning-text-18 {
+  color: #d8d8d8;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.warning-text-18 strong {
+  color: #f87171;
 }
 
 .welcome-buttons {
@@ -297,6 +351,41 @@ textarea,
 .welcome-buttons button:hover {
   transform: scale(1.05);
   background: #1f1f1f;
+}
+
+.welcome-footer {
+  margin-top: 36px;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.welcome-github-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #888;
+  font-size: 0.85rem;
+  text-decoration: none;
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition:
+    color 0.2s,
+    background 0.2s,
+    border-color 0.2s;
+  word-break: break-all;
+}
+
+.welcome-github-link:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.welcome-github-icon {
+  flex-shrink: 0;
 }
 
 #creators-view {
