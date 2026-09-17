@@ -980,9 +980,37 @@ export async function loadGifPlayer({
       const sizeStr = formatBytes(fullBuffer.byteLength);
       renderMediaProgress(progressOverlay, "Decoding...", 100, filename, sizeStr, sizeStr);
     } else {
-      const response = await fetch(url, { signal });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      let response = null;
+      let lastErr = null;
+      const candidateUrls = [url];
+      if (state.currentSite === "e621") {
+        const path = item.dataset.path || "";
+        const cleanSub = path.replace(/^\/?(?:data\/)?/, "");
+        if (cleanSub) {
+          const directUrl = `https://static1.e621.net/data/${cleanSub}`;
+          if (!candidateUrls.includes(directUrl)) {
+            candidateUrls.push(directUrl);
+          }
+        }
+      }
+
+      for (const targetUrl of candidateUrls) {
+        try {
+          const res = await fetch(targetUrl, { signal });
+          if (res.ok) {
+            response = res;
+            break;
+          } else {
+            lastErr = new Error(`HTTP ${res.status}`);
+          }
+        } catch (err) {
+          if (signal.aborted) return;
+          lastErr = err;
+        }
+      }
+
+      if (!response || !response.ok) {
+        throw lastErr || new Error(`HTTP ${response ? response.status : "Failed to fetch GIF"}`);
       }
 
       const contentType = (response.headers.get("content-type") || "").toLowerCase();

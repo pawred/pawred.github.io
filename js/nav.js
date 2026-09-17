@@ -1,7 +1,8 @@
 import { PROXY_URL, state } from "./state.js";
 import { buildCreatorCard } from "./creators.js";
-import { resetFeed, fetchPosts } from "./feed.js";
+import { resetFeed, fetchPosts, updateAllE621TagChips } from "./feed.js";
 import { escapeHtml } from "./utils.js";
+import { getE621Auth } from "./e621Auth.js";
 
 export const welcomeScreen = document.getElementById("welcome-screen");
 export const creatorsView = document.getElementById("creators-view");
@@ -10,8 +11,10 @@ export const nav = document.getElementById("nav");
 export const navHome = document.getElementById("nav-home");
 export const navBack = document.getElementById("nav-back");
 export const navInfo = document.getElementById("nav-info");
+export const navBlacklist = document.getElementById("nav-blacklist");
 export const navSettings = document.getElementById("nav-settings");
 export const settingsMenu = document.getElementById("settings-menu");
+export const blacklistMenu = document.getElementById("blacklist-menu");
 export const siteSelector = document.getElementById("site-selector");
 
 let navLastVisibleTime = 0;
@@ -33,6 +36,20 @@ export function closeAllPostInfo() {
   }
 }
 
+document.addEventListener(
+  "click",
+  (e) => {
+    const expandedInfo = document.querySelector(".post-info.expanded");
+    if (!expandedInfo) return;
+    if (e.target.closest(".post-info") || e.target.closest("#nav-info")) return;
+    closeAllPostInfo();
+    if (!e.target.closest("#nav")) {
+      e.stopPropagation();
+    }
+  },
+  true
+);
+
 window.lastMouseY = -1;
 
 export function updateNavVisibility(mouseY = window.lastMouseY) {
@@ -41,9 +58,20 @@ export function updateNavVisibility(mouseY = window.lastMouseY) {
   const dropdownOpen =
     !!document.getElementById("linked-accounts-dropdown") || !!document.getElementById("cum-posts-dropdown");
   const settingsOpen = settingsMenu && settingsMenu.classList.contains("active");
+  const blacklistOpen = blacklistMenu && blacklistMenu.classList.contains("active");
   const isMobile = window.innerWidth <= 768 || window.innerHeight <= 500;
   const inNavZone = !isMobile && mouseY >= 0 && mouseY < 80;
-  const isVisible = anyInfoExpanded || dropdownOpen || settingsOpen || inNavZone || state.navManualVisible;
+  const isSearchInputFocused =
+    !!document.activeElement &&
+    (document.activeElement.id === "e621-nav-search-input" || !!document.activeElement.closest("#nav-tabs"));
+  const isVisible =
+    anyInfoExpanded ||
+    dropdownOpen ||
+    settingsOpen ||
+    blacklistOpen ||
+    inNavZone ||
+    state.navManualVisible ||
+    isSearchInputFocused;
 
   if (isVisible) {
     if (!nav.classList.contains("visible")) {
@@ -134,8 +162,28 @@ export function updateSiteSpecificUI() {
       pawchive: "Pawchive",
       kemono: "Kemono",
       cum: "Coomer",
+      e621: "e621",
     };
-    creatorsTitle.textContent = `${displayNames[state.currentSite] || "Selected"} creators`;
+    creatorsTitle.textContent = state.currentSite === "e621" ? "e621 Artists" : `${displayNames[state.currentSite] || "Selected"} creators`;
+  }
+
+  const e621SearchContainer = document.getElementById("e621-search-container");
+  const btnCreators = document.getElementById("btn-creators");
+  const btnE621Favorites = document.getElementById("btn-e621-favorites");
+  const e621AccountPanel = document.getElementById("e621-account-panel");
+  const auth = getE621Auth();
+  const hasAccount = Boolean(auth && auth.username);
+
+  if (state.currentSite === "e621") {
+    if (e621SearchContainer) e621SearchContainer.style.display = "flex";
+    if (btnCreators) btnCreators.textContent = "Popular Posts";
+    if (btnE621Favorites) btnE621Favorites.style.display = hasAccount ? "" : "none";
+    if (e621AccountPanel) e621AccountPanel.style.display = "block";
+  } else {
+    if (e621SearchContainer) e621SearchContainer.style.display = "none";
+    if (btnCreators) btnCreators.textContent = "Creator List";
+    if (btnE621Favorites) btnE621Favorites.style.display = "none";
+    if (e621AccountPanel) e621AccountPanel.style.display = "none";
   }
 }
 
@@ -144,6 +192,134 @@ export function updateNavTabs(creator) {
   const navTabs = document.getElementById("nav-tabs");
   if (!navTabs) return;
   navTabs.innerHTML = "";
+
+  if (state.currentSite === "e621") {
+    navTabs.classList.add("e621-search-mode");
+
+    const ep = state.currentFeedEndpoint || "";
+    let activeTag = "";
+    if (ep.includes("?")) {
+      try {
+        const u = new URL(ep, window.location.href);
+        activeTag = u.searchParams.get("tags") || u.searchParams.get("q") || "";
+      } catch (_) {}
+    } else if (ep.includes("/popular")) {
+      activeTag = "order:rank";
+    }
+
+    const form = document.createElement("form");
+    form.className = "e621-nav-search-form";
+    form.id = "e621-nav-search-form";
+    form.autocomplete = "off";
+
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "e621-nav-search-icon";
+    iconSpan.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "e621-nav-search-input";
+    input.className = "e621-nav-search-input";
+    input.placeholder = "Search tags (e.g. canine, rating:s)...";
+    input.value = activeTag;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "e621-nav-search-clear";
+    clearBtn.id = "e621-nav-search-clear";
+    clearBtn.title = "Clear search";
+    clearBtn.setAttribute("aria-label", "Clear search");
+    clearBtn.innerHTML = "&times;";
+    clearBtn.style.display = activeTag ? "flex" : "none";
+
+    input.addEventListener("input", () => {
+      clearBtn.style.display = input.value.trim() ? "flex" : "none";
+      if (typeof updateAllE621TagChips === "function") {
+        updateAllE621TagChips();
+      }
+    });
+
+    input.addEventListener("focus", () => {
+      updateNavVisibility();
+    });
+
+    input.addEventListener("blur", () => {
+      setTimeout(() => updateNavVisibility(), 150);
+    });
+
+    clearBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      input.value = "";
+      clearBtn.style.display = "none";
+      input.focus();
+      if (typeof updateAllE621TagChips === "function") {
+        updateAllE621TagChips();
+      }
+    });
+
+    const auth = getE621Auth();
+    let favBtn = null;
+    if (auth && auth.username) {
+      favBtn = document.createElement("button");
+      favBtn.type = "button";
+      favBtn.className = "e621-nav-fav-btn";
+      favBtn.id = "e621-nav-fav-btn";
+      favBtn.title = "View your e621 Favorites";
+      favBtn.innerHTML = `★ Favs`;
+
+      if (activeTag.includes(`fav:${auth.username}`)) {
+        favBtn.classList.add("active");
+      }
+
+      favBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const favTag = `fav:${auth.username}`;
+        input.value = favTag;
+        clearBtn.style.display = "flex";
+        state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(favTag)}`;
+        state.currentFeedCreatorName = null;
+        resetFeed();
+        fetchPosts();
+        updateNavTabs(null);
+        closeAllPostInfo();
+      });
+    }
+
+    const submitBtn = document.createElement("button");
+    submitBtn.type = "submit";
+    submitBtn.className = "e621-nav-search-btn";
+    submitBtn.id = "e621-nav-search-btn";
+    submitBtn.textContent = "Search";
+
+    form.appendChild(iconSpan);
+    form.appendChild(input);
+    form.appendChild(clearBtn);
+    if (favBtn) form.appendChild(favBtn);
+    form.appendChild(submitBtn);
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const q = input.value.trim();
+      state.currentFeedEndpoint = q
+        ? `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(q)}`
+        : `${PROXY_URL}/e621/api/v1/posts`;
+      state.currentFeedCreatorName = null;
+      resetFeed();
+      fetchPosts();
+      updateNavTabs(null);
+      closeAllPostInfo();
+    });
+
+    navTabs.appendChild(form);
+    return;
+  } else {
+    navTabs.classList.remove("e621-search-mode");
+  }
 
   if (!creator) return;
 
@@ -798,7 +974,7 @@ export function showView(viewElement, showNav = true) {
     state.navManualVisible = false;
     if (navInfo) navInfo.classList.remove("hidden");
     if (navTabs) {
-      if (state.currentFeedCreatorName) {
+      if (state.currentFeedCreatorName || state.currentSite === "e621") {
         navTabs.classList.remove("hidden");
       } else {
         navTabs.classList.add("hidden");

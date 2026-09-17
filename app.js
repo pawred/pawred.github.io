@@ -7,8 +7,10 @@ import {
   navHome,
   navBack,
   navInfo,
+  navBlacklist,
   navSettings,
   settingsMenu,
+  blacklistMenu,
   siteSelector,
   isNavInteractive,
   updateNavVisibility,
@@ -32,7 +34,7 @@ import {
   filterAndSortCreators,
   renderServiceFilters
 } from './js/creators.js';
-import { resetFeed, fetchPosts, navigateCarousel, handleCarouselScrollSettled, smoothScroll, getCarouselMetrics } from './js/feed.js';
+import { resetFeed, fetchPosts, navigateCarousel, handleCarouselScrollSettled, smoothScroll, getCarouselMetrics, applyBlacklistToCurrentFeed } from './js/feed.js';
 import {
   zipViewer,
   zipNav,
@@ -56,6 +58,15 @@ import {
 } from './js/zip.js';
 import { initGestures } from './js/gestures.js';
 import { initEdgeVisualizer, toggleEdgeVisualizer } from './js/edgeVisualizer.js';
+import {
+  getE621Auth,
+  saveE621Auth,
+  getE621Blacklist,
+  saveE621Blacklist,
+  isE621BlacklistEnabled,
+  setE621BlacklistEnabled,
+  fetchE621UserProfile
+} from './js/e621Auth.js';
 
 window.pawAnimationsDisabled = localStorage.getItem('paw_animations_disabled') === 'true';
 window.pawAutoDownloadZip = localStorage.getItem('paw_auto_download_zip') === 'true';
@@ -217,6 +228,145 @@ if (settingVisualizeEdges) {
   });
 }
 
+// e621 Account (Home page)
+const settingE621Username = document.getElementById('setting-e621-username');
+const settingE621ApiKey = document.getElementById('setting-e621-api-key');
+const btnE621SaveAuth = document.getElementById('btn-e621-save-auth');
+const e621AuthStatus = document.getElementById('e621-auth-status');
+
+const initialE621Auth = getE621Auth();
+if (settingE621Username) settingE621Username.value = initialE621Auth.username || '';
+if (settingE621ApiKey) settingE621ApiKey.value = initialE621Auth.apiKey || '';
+
+// Blacklist Menu (Drawer)
+const blacklistMenuEnable = document.getElementById('blacklist-menu-enable');
+const blacklistMenuTags = document.getElementById('blacklist-menu-tags');
+const btnBlacklistMenuSync = document.getElementById('btn-blacklist-menu-sync');
+const btnBlacklistMenuClear = document.getElementById('btn-blacklist-menu-clear');
+const btnBlacklistMenuSave = document.getElementById('btn-blacklist-menu-save');
+const blacklistMenuStatus = document.getElementById('blacklist-menu-status');
+const closeBlacklistMenu = document.getElementById('close-blacklist-menu');
+
+const initialBlacklistEnabled = isE621BlacklistEnabled();
+if (blacklistMenuEnable) blacklistMenuEnable.checked = initialBlacklistEnabled;
+
+const initialBlacklistText = getE621Blacklist();
+if (blacklistMenuTags) blacklistMenuTags.value = initialBlacklistText;
+
+if (blacklistMenuEnable) {
+  blacklistMenuEnable.addEventListener('change', (e) => {
+    setE621BlacklistEnabled(e.target.checked);
+    if (settingE621EnableBlacklist) settingE621EnableBlacklist.checked = e.target.checked;
+    applyBlacklistToCurrentFeed();
+  });
+}
+
+if (blacklistMenuTags) {
+  blacklistMenuTags.addEventListener('input', (e) => {
+    saveE621Blacklist(e.target.value);
+    if (settingE621Blacklist) settingE621Blacklist.value = e.target.value;
+  });
+}
+
+if (btnBlacklistMenuSave) {
+  btnBlacklistMenuSave.addEventListener('click', () => {
+    const tags = blacklistMenuTags ? blacklistMenuTags.value : '';
+    saveE621Blacklist(tags);
+    if (settingE621Blacklist) settingE621Blacklist.value = tags;
+    applyBlacklistToCurrentFeed();
+    if (blacklistMenuStatus) {
+      blacklistMenuStatus.textContent = 'Blacklist saved!';
+      blacklistMenuStatus.style.color = '#3fb950';
+      setTimeout(() => {
+        if (blacklistMenuStatus.textContent === 'Blacklist saved!') {
+          blacklistMenuStatus.textContent = '';
+        }
+      }, 2500);
+    }
+  });
+}
+
+if (btnBlacklistMenuClear) {
+  btnBlacklistMenuClear.addEventListener('click', () => {
+    if (blacklistMenuTags) blacklistMenuTags.value = '';
+    saveE621Blacklist('');
+    if (settingE621Blacklist) settingE621Blacklist.value = '';
+    applyBlacklistToCurrentFeed();
+    if (blacklistMenuStatus) {
+      blacklistMenuStatus.textContent = 'Blacklist cleared.';
+      blacklistMenuStatus.style.color = '#bbb';
+      setTimeout(() => {
+        if (blacklistMenuStatus.textContent === 'Blacklist cleared.') {
+          blacklistMenuStatus.textContent = '';
+        }
+      }, 2500);
+    }
+  });
+}
+
+if (btnBlacklistMenuSync) {
+  btnBlacklistMenuSync.addEventListener('click', async () => {
+    const auth = getE621Auth();
+    if (!auth.username) {
+      if (blacklistMenuStatus) {
+        blacklistMenuStatus.textContent = 'Enter username on Home page first.';
+        blacklistMenuStatus.style.color = '#f85149';
+      }
+      return;
+    }
+    if (blacklistMenuStatus) {
+      blacklistMenuStatus.textContent = 'Syncing blacklist...';
+      blacklistMenuStatus.style.color = '#58a6ff';
+    }
+    btnBlacklistMenuSync.disabled = true;
+    try {
+      const user = await fetchE621UserProfile(auth.username, auth.apiKey);
+      const tags = user.blacklisted_tags || '';
+      saveE621Blacklist(tags);
+      if (blacklistMenuTags) blacklistMenuTags.value = tags;
+      if (settingE621Blacklist) settingE621Blacklist.value = tags;
+      const count = tags.split('\n').map(s => s.trim()).filter(Boolean).length;
+      applyBlacklistToCurrentFeed();
+      if (blacklistMenuStatus) {
+        blacklistMenuStatus.textContent = `Synced ${count} blacklist rules!`;
+        blacklistMenuStatus.style.color = '#3fb950';
+      }
+    } catch (err) {
+      if (blacklistMenuStatus) {
+        blacklistMenuStatus.textContent = `Sync failed: ${err.message || err}`;
+        blacklistMenuStatus.style.color = '#f85149';
+      }
+    } finally {
+      btnBlacklistMenuSync.disabled = false;
+    }
+  });
+}
+
+if (closeBlacklistMenu && blacklistMenu) {
+  closeBlacklistMenu.addEventListener('click', () => {
+    blacklistMenu.classList.remove('active');
+    updateNavVisibility();
+  });
+}
+
+if (btnE621SaveAuth) {
+  btnE621SaveAuth.addEventListener('click', () => {
+    const userVal = settingE621Username ? settingE621Username.value.trim() : '';
+    const keyVal = settingE621ApiKey ? settingE621ApiKey.value.trim() : '';
+    saveE621Auth(userVal, keyVal);
+    updateSiteSpecificUI();
+    if (e621AuthStatus) {
+      e621AuthStatus.textContent = 'Account saved!';
+      e621AuthStatus.style.color = '#3fb950';
+      setTimeout(() => {
+        if (e621AuthStatus.textContent === 'Account saved!') {
+          e621AuthStatus.textContent = '';
+        }
+      }, 3000);
+    }
+  });
+}
+
 document.addEventListener('mousemove', (e) => {
   window.lastMouseY = e.clientY;
   updateNavVisibility();
@@ -240,17 +390,34 @@ if (navInfo) {
   });
 }
 
+if (navBlacklist && blacklistMenu) {
+  navBlacklist.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!isNavInteractive()) return;
+    if (settingsMenu) settingsMenu.classList.remove('active');
+    if (blacklistMenuTags) blacklistMenuTags.value = getE621Blacklist();
+    if (blacklistMenuEnable) blacklistMenuEnable.checked = isE621BlacklistEnabled();
+    blacklistMenu.classList.toggle('active');
+    updateNavVisibility();
+  });
+}
+
 if (navSettings && settingsMenu) {
   navSettings.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!isNavInteractive()) return;
+    if (blacklistMenu) blacklistMenu.classList.remove('active');
     settingsMenu.classList.toggle('active');
+    updateNavVisibility();
   });
   
   document.addEventListener('click', (e) => {
     const isZipSettings = document.getElementById('zip-settings-viewer') && e.target === document.getElementById('zip-settings-viewer');
     if (!settingsMenu.contains(e.target) && e.target !== navSettings && !isZipSettings) {
       settingsMenu.classList.remove('active');
+    }
+    if (blacklistMenu && !blacklistMenu.contains(e.target) && (!navBlacklist || !navBlacklist.contains(e.target))) {
+      blacklistMenu.classList.remove('active');
     }
   });
 }
@@ -272,6 +439,8 @@ export function resetHomeState() {
     const checkboxes = serviceFilterSelect.querySelectorAll('input[type="checkbox"]');
     checkboxes.forEach((cb) => (cb.checked = false));
   }
+  const inputE621Tag = document.getElementById('e621-tag-input');
+  if (inputE621Tag) inputE621Tag.value = '';
 }
 
 if (siteSelector) {
@@ -359,7 +528,7 @@ if (btnLatest) {
     updateNavTabs(null);
     if (navBack) navBack.classList.remove('hidden'); 
     showView(feedView, true);
-    loadCreators();
+    if (state.currentSite !== 'e621') loadCreators();
     fetchPosts();
   });
 }
@@ -367,10 +536,71 @@ if (btnLatest) {
 const btnCreators = document.getElementById('btn-creators');
 if (btnCreators) {
   btnCreators.addEventListener('click', () => {
-    state.creatorPage = 1;
-    showView(creatorsView, true);
-    if (navBack) navBack.classList.remove('hidden'); 
-    loadCreators();
+    if (state.currentSite === 'e621') {
+      resetFeed();
+      state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/popular`;
+      state.currentFeedCreatorName = null;
+      updateNavTabs(null);
+      if (navBack) navBack.classList.remove('hidden');
+      showView(feedView, true);
+      fetchPosts();
+    } else {
+      state.creatorPage = 1;
+      showView(creatorsView, true);
+      if (navBack) navBack.classList.remove('hidden'); 
+      loadCreators();
+    }
+  });
+}
+
+const btnE621Favorites = document.getElementById('btn-e621-favorites');
+if (btnE621Favorites) {
+  btnE621Favorites.addEventListener('click', () => {
+    const auth = getE621Auth();
+    if (!auth.username) {
+      alert("Please enter your e621 Username below to access your favorites.");
+      if (settingE621Username) {
+        settingE621Username.focus();
+        settingE621Username.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      return;
+    }
+    resetFeed();
+    const favTag = `fav:${auth.username}`;
+    if (inputE621Tag) inputE621Tag.value = favTag;
+    state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(favTag)}`;
+    state.currentFeedCreatorName = null;
+    updateNavTabs(null);
+    if (navBack) navBack.classList.remove('hidden');
+    showView(feedView, true);
+    fetchPosts();
+  });
+}
+
+const btnE621Search = document.getElementById('btn-e621-search');
+const inputE621Tag = document.getElementById('e621-tag-input');
+
+function triggerE621Search() {
+  const tagVal = inputE621Tag ? inputE621Tag.value.trim() : '';
+  if (!tagVal) return;
+  resetFeed();
+  state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(tagVal)}`;
+  state.currentFeedCreatorName = null;
+  updateNavTabs(null);
+  if (navBack) navBack.classList.remove('hidden');
+  showView(feedView, true);
+  fetchPosts();
+}
+
+if (btnE621Search) {
+  btnE621Search.addEventListener('click', triggerE621Search);
+}
+if (inputE621Tag) {
+  inputE621Tag.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      triggerE621Search();
+    }
   });
 }
 

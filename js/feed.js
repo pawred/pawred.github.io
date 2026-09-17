@@ -16,6 +16,13 @@ import { openZipGallery } from "./zip.js";
 import { detectExternalGalleries, renderExternalFileCard, isDropboxFolderUrl, escapeHtml } from "./externalGalleries.js";
 import { attachCustomVideoPlayer } from "./player.js";
 import { loadGifPlayer } from "./gifPlayer.js";
+import {
+  getE621Headers,
+  parseBlacklist,
+  isPostBlacklisted,
+  getE621Blacklist,
+  isE621BlacklistEnabled,
+} from "./e621Auth.js";
 
 export const feed = document.getElementById("feed");
 export const feedLoading = document.getElementById("feed-loading");
@@ -147,8 +154,8 @@ export function syncCarouselClones(item) {
 export const mediaObserver = new IntersectionObserver(
   (entries) => {
     entries.forEach((entry) => {
+      const item = entry.target;
       if (entry.isIntersecting) {
-        const item = entry.target;
         if (item.dataset.isClone === "true") {
           const carousel = item.parentElement;
           if (carousel) {
@@ -165,9 +172,14 @@ export const mediaObserver = new IntersectionObserver(
           return;
         }
 
-        if (!item.dataset.loaded) {
-          item.dataset.loaded = "true";
-          loadMediaWithProgress(item);
+        if (!item.dataset.loaded && !item._loadTimer) {
+          item._loadTimer = setTimeout(() => {
+            item._loadTimer = null;
+            if (!item.dataset.loaded && item.isConnected) {
+              item.dataset.loaded = "true";
+              loadMediaWithProgress(item);
+            }
+          }, 80);
         }
 
         const carousel = item.closest(".media-carousel");
@@ -179,6 +191,11 @@ export const mediaObserver = new IntersectionObserver(
             carousel._restingScrollLeft = firstOffset;
           }
           preloadUpcomingMedia(carousel);
+        }
+      } else {
+        if (item._loadTimer) {
+          clearTimeout(item._loadTimer);
+          item._loadTimer = null;
         }
       }
     });
@@ -231,8 +248,12 @@ export const feedObserver = new IntersectionObserver(
 );
 
 export function detachMedia(item, force = false) {
-  if (!item || (!force && !item.dataset.loaded)) return;
+  if (!item || (!force && !item.dataset.loaded && !item._loadTimer)) return;
 
+  if (item._loadTimer) {
+    clearTimeout(item._loadTimer);
+    item._loadTimer = null;
+  }
   if (item._upgradeTimer) {
     clearTimeout(item._upgradeTimer);
     item._upgradeTimer = null;
@@ -240,7 +261,7 @@ export function detachMedia(item, force = false) {
   if (item._fullImg) {
     item._fullImg.onload = null;
     item._fullImg.onerror = null;
-    item._fullImg.src = "";
+    item._fullImg.removeAttribute("src");
     item._fullImg = null;
   }
   if (item._abortController) {
@@ -286,7 +307,9 @@ export function detachMedia(item, force = false) {
         if (typeof el.load === "function") el.load();
       }
     } else if (tag === "img") {
-      el.src = "";
+      el.onload = null;
+      el.onerror = null;
+      el.removeAttribute("src");
     }
     el.remove();
   });
@@ -314,8 +337,8 @@ export function recycleOffscreenCards() {
 
   const h = (feed && feed.clientHeight) || window.innerHeight || 1;
   const currentCardIndex = Math.round(feed.scrollTop / h);
-  const KEEP_WINDOW_IMG = 5;
-  const KEEP_WINDOW_VIDEO = 2;
+  const KEEP_WINDOW_IMG = 8;
+  const KEEP_WINDOW_VIDEO = 3;
 
   cards.forEach((card, idx) => {
     const isOutOfImgWindow = idx < currentCardIndex - KEEP_WINDOW_IMG || idx > currentCardIndex + KEEP_WINDOW_IMG;
@@ -911,8 +934,14 @@ export async function loadMediaWithProgress(item) {
   const isImageFile = path && /\.(jpe?g|png|webp|gif)$/i.test(path);
   // Progressive loading (thumbnail first, full-res upgrade later) is opt-in;
   // by default the full-resolution image is fetched directly.
-  if (isImageSite && isImageFile && !path.startsWith("http://") && !path.startsWith("https://") && window.pawProgressiveImages) {
-    const thumbUrl = `${PROXY_URL}/${state.currentSite}/thumbnail/data${path}`;
+  const previewThumbUrl = (state.currentSite === "e621" && item._post?.preview_url)
+    ? getMediaUrl(item._post.preview_url)
+    : (isImageSite && isImageFile && !path.startsWith("http://") && !path.startsWith("https://")
+      ? `${PROXY_URL}/${state.currentSite}/thumbnail/data${path}`
+      : null);
+
+  if (previewThumbUrl && isImageFile && window.pawProgressiveImages) {
+    const thumbUrl = previewThumbUrl;
     img.src = thumbUrl;
     img.onload = () => {
       item.classList.add("media-has-preview");
@@ -1221,6 +1250,147 @@ export function cleanEmptyParagraphs(container) {
   });
 }
 
+export function toggleE621SearchTag(tag, mode = "add") {
+  let input = document.getElementById("e621-nav-search-input");
+  if (!input) {
+    updateNavTabs(null);
+    input = document.getElementById("e621-nav-search-input");
+  }
+  if (!input) return;
+
+  const cleanTag = tag.trim().replace(/\s+/g, "_");
+  if (!cleanTag) return;
+
+  const currentVal = input.value.trim();
+  let tokens = currentVal ? currentVal.split(/\s+/).filter(Boolean) : [];
+
+  const lowerTag = cleanTag.toLowerCase();
+  const lowerNegTag = `-${lowerTag}`;
+
+  const exactIdx = tokens.findIndex((tok) => tok.toLowerCase() === lowerTag);
+  const negIdx = tokens.findIndex((tok) => tok.toLowerCase() === lowerNegTag);
+
+  if (mode === "add") {
+    if (exactIdx !== -1) {
+      tokens.splice(exactIdx, 1);
+    } else if (negIdx !== -1) {
+      tokens[negIdx] = cleanTag;
+    } else {
+      tokens.push(cleanTag);
+    }
+  } else if (mode === "exclude") {
+    if (negIdx !== -1) {
+      tokens.splice(negIdx, 1);
+    } else if (exactIdx !== -1) {
+      tokens[exactIdx] = `-${cleanTag}`;
+    } else {
+      tokens.push(`-${cleanTag}`);
+    }
+  }
+
+  input.value = tokens.join(" ");
+  const clearBtn = document.getElementById("e621-nav-search-clear");
+  if (clearBtn) clearBtn.style.display = input.value.trim() ? "flex" : "none";
+
+  state.navManualVisible = true;
+  updateNavVisibility();
+
+  updateAllE621TagChips();
+}
+
+export function updateAllE621TagChips() {
+  const input = document.getElementById("e621-nav-search-input");
+  const currentVal = input ? input.value.trim() : "";
+  const tokens = currentVal ? currentVal.split(/\s+/).filter(Boolean) : [];
+  const lowerTokens = tokens.map((t) => t.toLowerCase());
+
+  document.querySelectorAll(".e621-tag-item").forEach((item) => {
+    const rawTag = item.dataset.tag;
+    if (!rawTag) return;
+    const lowerTag = rawTag.toLowerCase().replace(/\s+/g, "_");
+    const lowerNegTag = `-${lowerTag}`;
+
+    const hasPlus = lowerTokens.includes(lowerTag);
+    const hasMinus = lowerTokens.includes(lowerNegTag);
+
+    const plusBtn = item.querySelector(".e621-tag-btn-plus");
+    const minusBtn = item.querySelector(".e621-tag-btn-minus");
+
+    if (plusBtn) plusBtn.classList.toggle("active-plus", hasPlus);
+    if (minusBtn) minusBtn.classList.toggle("active-minus", hasMinus);
+  });
+}
+if (typeof window !== "undefined") {
+  window.updateAllE621TagChips = updateAllE621TagChips;
+}
+
+export function parseE621Description(text) {
+  if (!text || typeof text !== "string") return "";
+
+  // 1. Escape HTML first for XSS prevention
+  let escaped = escapeHtml(text.trim());
+
+  // 2. DText [url=...]...[/url] and [url]...[/url]
+  escaped = escaped.replace(
+    /\[url=(?:&quot;|&#039;|")?((?:https?:\/\/|\/)[^\s\]"'>]+)(?:&quot;|&#039;|")?\]([\s\S]*?)\[\/url\]/gi,
+    (_, url, label) => {
+      const href = url.startsWith("/") ? `https://e621.net${url}` : url;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="e621-desc-link">${label}</a>`;
+    }
+  );
+  escaped = escaped.replace(
+    /\[url\]((?:https?:\/\/|\/)[^\s\]"'>]+)\[\/url\]/gi,
+    (_, url) => {
+      const href = url.startsWith("/") ? `https://e621.net${url}` : url;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="e621-desc-link">${url}</a>`;
+    }
+  );
+
+  // 3. DText "label":url (e.g. &quot;My Twitter&quot;:https://twitter.com/...)
+  escaped = escaped.replace(
+    /(?:&quot;|"|&#039;)([^"'\n\r<>]+?)(?:&quot;|"|&#039;):((?:https?:\/\/|\/)[^\s<]+)/gi,
+    (_, label, url) => {
+      const m = url.match(/^(.*?)([.,;:!?)]*)$/);
+      const cleanUrl = m ? m[1] : url;
+      const trail = m ? m[2] : "";
+      const href = cleanUrl.startsWith("/") ? `https://e621.net${cleanUrl}` : cleanUrl;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="e621-desc-link">${label}</a>${trail}`;
+    }
+  );
+
+  // 4. e621 entity shortcuts (post #12345, pool #12345, thumb #12345)
+  escaped = escaped.replace(/\b(post|pool|thumb)\s*#\s*(\d+)\b/gi, (_, type, id) => {
+    const target = type.toLowerCase() === "pool" ? `pools/${id}` : `posts/${id}`;
+    return `<a href="https://e621.net/${target}" target="_blank" rel="noopener noreferrer" class="e621-desc-link">${type} #${id}</a>`;
+  });
+
+  // 5. Raw URLs not already inside an <a> tag
+  const parts = escaped.split(/(<a\b[^>]*>[\s\S]*?<\/a>)/gi);
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = parts[i].replace(
+      /(https?:\/\/[^\s<]+?)([.,;:!?)]*)(?=\s|$|<)/gi,
+      (_, url, trail) => {
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="e621-desc-link">${url}</a>${trail}`;
+      }
+    );
+  }
+  escaped = parts.join("");
+
+  // 6. Basic formatting: bold, italic, underline, strike, spoiler, quote, code
+  escaped = escaped.replace(/\[b\]([\s\S]*?)\[\/b\]/gi, "<b>$1</b>");
+  escaped = escaped.replace(/\[i\]([\s\S]*?)\[\/i\]/gi, "<i>$1</i>");
+  escaped = escaped.replace(/\[u\]([\s\S]*?)\[\/u\]/gi, "<u>$1</u>");
+  escaped = escaped.replace(/\[s\]([\s\S]*?)\[\/s\]/gi, "<s>$1</s>");
+  escaped = escaped.replace(/\[spoiler\]([\s\S]*?)\[\/spoiler\]/gi, '<span class="e621-spoiler">$1</span>');
+  escaped = escaped.replace(/\[quote\]([\s\S]*?)\[\/quote\]/gi, '<blockquote class="e621-quote">$1</blockquote>');
+  escaped = escaped.replace(/\[code\]([\s\S]*?)\[\/code\]/gi, "<code>$1</code>");
+
+  // 7. Line breaks
+  escaped = escaped.replace(/\r\n|\n|\r/g, "<br>");
+
+  return escaped;
+}
+
 export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
   if (!post) {
     if (authorEl) {
@@ -1234,6 +1404,236 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
     if (contentEl) {
       contentEl.innerHTML = "";
       contentEl.style.display = "none";
+    }
+    return;
+  }
+
+  if (post.service === "e621") {
+    // 1. e621 does not have titles: hide title element
+    if (titleEl) {
+      titleEl.innerHTML = "";
+      titleEl.style.display = "none";
+    }
+
+    // 2. Author: display artists in gold, post badge, and rating badge
+    if (authorEl) {
+      authorEl.innerHTML = "";
+      authorEl.style.display = "flex";
+      authorEl.style.alignItems = "center";
+      authorEl.style.flexWrap = "wrap";
+      authorEl.style.gap = "8px";
+
+      const artists = (post.artists && post.artists.length > 0)
+        ? post.artists
+        : (post.tags_categorized?.artist?.length ? post.tags_categorized.artist : [post.user || "unknown"]);
+
+      const artistPrefix = document.createElement("span");
+      artistPrefix.style.opacity = "0.75";
+      artistPrefix.textContent = artists.length > 1 ? "Artists:" : "Artist:";
+      authorEl.appendChild(artistPrefix);
+
+      artists.forEach((art, idx) => {
+        const artLink = document.createElement("a");
+        artLink.className = "e621-artist-label";
+        artLink.textContent = art.replace(/_/g, " ");
+        artLink.title = `Search artist: ${art}`;
+        artLink.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(art)}`;
+          state.currentFeedCreatorName = null;
+          resetFeed();
+          fetchPosts();
+          updateNavTabs(null);
+          closeAllPostInfo();
+        });
+        authorEl.appendChild(artLink);
+
+        if (idx < artists.length - 1) {
+          const sep = document.createElement("span");
+          sep.textContent = ",";
+          sep.style.opacity = "0.5";
+          authorEl.appendChild(sep);
+        }
+      });
+
+      if (post.id) {
+        const postBadge = document.createElement("a");
+        postBadge.className = "e621-post-badge";
+        postBadge.href = `https://e621.net/posts/${post.id}`;
+        postBadge.target = "_blank";
+        postBadge.rel = "noopener noreferrer";
+        postBadge.textContent = `#${post.id}`;
+        postBadge.title = "Open on e621.net";
+        authorEl.appendChild(postBadge);
+      }
+
+      if (post.rating) {
+        const rBadge = document.createElement("span");
+        rBadge.style.fontSize = "0.75rem";
+        rBadge.style.fontWeight = "700";
+        rBadge.style.padding = "2px 6px";
+        rBadge.style.borderRadius = "4px";
+        rBadge.style.marginLeft = "4px";
+        const r = String(post.rating).toLowerCase();
+        if (r === "s") {
+          rBadge.textContent = "Safe";
+          rBadge.style.background = "rgba(40, 167, 69, 0.25)";
+          rBadge.style.color = "#4cd964";
+        } else if (r === "q") {
+          rBadge.textContent = "Questionable";
+          rBadge.style.background = "rgba(255, 193, 7, 0.25)";
+          rBadge.style.color = "#ffcc00";
+        } else {
+          rBadge.textContent = "Explicit";
+          rBadge.style.background = "rgba(220, 53, 69, 0.25)";
+          rBadge.style.color = "#ff453a";
+        }
+        authorEl.appendChild(rBadge);
+      }
+    }
+
+    // 3. Content: Description + Categorized Tags
+    if (contentEl) {
+      contentEl.innerHTML = "";
+      if (window.matchMedia("(max-width: 768px)").matches) {
+        contentEl.style.paddingBottom = "120px";
+      }
+
+      let hasAnyContent = false;
+
+      // Description
+      const desc = post.description || post.content || "";
+      if (desc && desc.trim()) {
+        const parsed = parseE621Description(desc);
+        if (parsed) {
+          hasAnyContent = true;
+          const descDiv = document.createElement("div");
+          descDiv.className = "e621-post-description";
+          descDiv.innerHTML = parsed;
+          descDiv.querySelectorAll("a").forEach((a) => {
+            a.addEventListener("click", (e) => {
+              e.stopPropagation();
+            });
+          });
+          contentEl.appendChild(descDiv);
+        }
+      }
+
+      // Categorized tags
+      const catMap = post.tags_categorized || {};
+      const categories = [
+        { key: "artist", label: "Artists", cssClass: "e621-tag-artist", catClass: "e621-cat-artist" },
+        { key: "contributor", label: "Contributors", cssClass: "e621-tag-contributor", catClass: "e621-cat-contributor" },
+        { key: "copyright", label: "Copyrights", cssClass: "e621-tag-copyright", catClass: "e621-cat-copyright" },
+        { key: "character", label: "Characters", cssClass: "e621-tag-character", catClass: "e621-cat-character" },
+        { key: "species", label: "Species", cssClass: "e621-tag-species", catClass: "e621-cat-species" },
+        { key: "general", label: "General", cssClass: "e621-tag-general", catClass: "e621-cat-general" },
+        { key: "lore", label: "Lore", cssClass: "e621-tag-lore", catClass: "e621-cat-lore" },
+        { key: "meta", label: "Meta", cssClass: "e621-tag-meta", catClass: "e621-cat-meta" },
+        { key: "invalid", label: "Invalid", cssClass: "e621-tag-invalid", catClass: "e621-cat-invalid" },
+      ];
+
+      const tagsSection = document.createElement("div");
+      tagsSection.className = "e621-tags-section";
+
+      let hasTags = false;
+      categories.forEach(({ key, label, cssClass, catClass }) => {
+        const tagList = Array.isArray(catMap[key]) ? catMap[key] : [];
+        if (tagList.length === 0) return;
+        hasTags = true;
+
+        const catDiv = document.createElement("div");
+        catDiv.className = `e621-tag-category ${catClass}`;
+
+        const catHeader = document.createElement("div");
+        catHeader.className = "e621-tag-category-header";
+        catHeader.textContent = `${label} (${tagList.length})`;
+        catDiv.appendChild(catHeader);
+
+        const listDiv = document.createElement("div");
+        listDiv.className = "e621-tag-list";
+
+        const searchInput = document.getElementById("e621-nav-search-input");
+        const curVal = searchInput ? searchInput.value.trim() : "";
+        const curTokens = curVal ? curVal.split(/\s+/).filter(Boolean) : [];
+        const lowerTokens = curTokens.map((tok) => tok.toLowerCase());
+
+        tagList.forEach((t) => {
+          const item = document.createElement("div");
+          item.className = `e621-tag-item ${cssClass}`;
+          item.dataset.tag = t;
+
+          const lowerT = t.toLowerCase().replace(/\s+/g, "_");
+
+          // Plus button: add tag to search bar
+          const plusBtn = document.createElement("button");
+          plusBtn.type = "button";
+          plusBtn.className = "e621-tag-btn e621-tag-btn-plus";
+          plusBtn.textContent = "+";
+          plusBtn.title = `Add '${t}' to search bar`;
+          plusBtn.setAttribute("aria-label", `Add tag ${t}`);
+          if (lowerTokens.includes(lowerT)) {
+            plusBtn.classList.add("active-plus");
+          }
+          plusBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleE621SearchTag(t, "add");
+          });
+
+          // Minus button: exclude -tag in search bar
+          const minusBtn = document.createElement("button");
+          minusBtn.type = "button";
+          minusBtn.className = "e621-tag-btn e621-tag-btn-minus";
+          minusBtn.textContent = "−";
+          minusBtn.title = `Exclude '-${t}' in search bar`;
+          minusBtn.setAttribute("aria-label", `Exclude tag ${t}`);
+          if (lowerTokens.includes(`-${lowerT}`)) {
+            minusBtn.classList.add("active-minus");
+          }
+          minusBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleE621SearchTag(t, "exclude");
+          });
+
+          // Tag name button: search only this tag
+          const nameBtn = document.createElement("button");
+          nameBtn.type = "button";
+          nameBtn.className = "e621-tag-name";
+          nameBtn.textContent = t.replace(/_/g, " ");
+          nameBtn.title = `Search only '${t}'`;
+          nameBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(t)}`;
+            state.currentFeedCreatorName = null;
+            resetFeed();
+            fetchPosts();
+            updateNavTabs(null);
+            closeAllPostInfo();
+          });
+
+          item.appendChild(plusBtn);
+          item.appendChild(minusBtn);
+          item.appendChild(nameBtn);
+          listDiv.appendChild(item);
+        });
+
+        catDiv.appendChild(listDiv);
+        tagsSection.appendChild(catDiv);
+      });
+
+      if (hasTags) {
+        hasAnyContent = true;
+        contentEl.appendChild(tagsSection);
+      }
+
+      if (hasAnyContent) {
+        contentEl.style.display = "block";
+      } else {
+        contentEl.style.display = "none";
+      }
     }
     return;
   }
@@ -1261,7 +1661,7 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
     authorLink.href = creatorUrl;
     authorLink.target = "_blank";
     authorLink.rel = "noopener noreferrer";
-    authorLink.textContent = `Creator: ${displayName}`;
+    authorLink.textContent = (post.service === "e621") ? `Artist: ${displayName}` : `Creator: ${displayName}`;
     authorEl.appendChild(authorLink);
 
     if (post.service) {
@@ -1387,6 +1787,136 @@ export function getCurrentGalleryPost() {
   return null;
 }
 
+const e621FamilyCache = new Map();
+
+export async function fetchE621FamilyPosts(rootParentId) {
+  const cacheKey = String(rootParentId);
+  if (e621FamilyCache.has(cacheKey)) {
+    return e621FamilyCache.get(cacheKey);
+  }
+
+  let posts = [];
+  try {
+    // 1. Primary: Direct fetch to e621 (native CORS, residential IP avoids bot blocks)
+    const directUrl = new URL("https://e621.net/posts.json");
+    directUrl.searchParams.set("tags", `~parent:${rootParentId} ~id:${rootParentId}`);
+    directUrl.searchParams.set("limit", "100");
+    let res = null;
+    try {
+      res = await fetch(directUrl.toString());
+    } catch (_) {}
+
+    // 2. Fallback: Proxy worker if direct fetch failed (e.g. ISP censorship/network failure)
+    if (!res || !res.ok) {
+      const ep = `${PROXY_URL}/e621/api/v1/posts?limit=100&tags=${encodeURIComponent(`~parent:${rootParentId} ~id:${rootParentId}`)}`;
+      try {
+        res = await fetch(ep);
+      } catch (_) {}
+    }
+
+    if (res && res.ok) {
+      const data = await res.json();
+      const rawPosts = Array.isArray(data) ? data : (Array.isArray(data.posts) ? data.posts : []);
+      const normalized = rawPosts.map((p) => (p.service === "e621" && p.tags_categorized ? p : transformE621PostClient(p)));
+
+      const parentPost = normalized.find((p) => String(p.id) === String(rootParentId));
+      const childPosts = normalized.filter((p) => String(p.id) !== String(rootParentId));
+      childPosts.sort((a, b) => Number(a.id) - Number(b.id));
+
+      if (parentPost) {
+        posts = [parentPost, ...childPosts];
+      } else {
+        posts = childPosts;
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to fetch e621 family posts:", err);
+  }
+
+  if (posts.length > 0) {
+    e621FamilyCache.set(cacheKey, posts);
+  }
+  return posts;
+}
+
+function setupE621FamilyCarousel(card, post, carousel, indicator, author, title, content) {
+  const rootParentId = post.relationships?.parent_id || post.id;
+  if (!rootParentId) return;
+
+  fetchE621FamilyPosts(rootParentId).then((familyPosts) => {
+    if (!familyPosts || familyPosts.length <= 1) return;
+
+    carousel._familyPosts = familyPosts;
+    carousel.dataset.mediaCount = String(familyPosts.length);
+
+    Array.from(carousel.children).forEach((c) => {
+      if (mediaObserver) mediaObserver.unobserve(c);
+    });
+    carousel.innerHTML = "";
+
+    familyPosts.forEach((fp) => {
+      const mediaPath = fp.file?.path || "";
+      const item = document.createElement("div");
+      item.className = "media-item";
+      item.dataset.originalName = fp.file?.name || `${fp.id}.jpg`;
+      item._post = fp;
+
+      const ext = ((fp.file?.name || mediaPath).split(".").pop() || "jpg").toLowerCase();
+      const isVideo = ["mp4", "webm", "mov"].includes(ext);
+      const isAudio = ["mp3", "ogg", "wav", "m4a"].includes(ext);
+      const isGif = ext === "gif";
+
+      item.dataset.url = getMediaUrl(mediaPath);
+      item.dataset.path = mediaPath;
+      item.dataset.isUnimported = "false";
+      item.dataset.type = isVideo ? "video" : isAudio ? "audio" : isGif ? "gif" : "image";
+
+      const progressOverlay = document.createElement("div");
+      progressOverlay.className = "media-progress media-loading";
+      item.appendChild(progressOverlay);
+
+      const mediaName = fp.file?.name || mediaPath.split("/").pop() || "media";
+      const sizeLabel = fp.file?.size ? formatBytes(fp.file.size) : "";
+      renderMediaProgress(progressOverlay, "Loading...", null, mediaName, "", sizeLabel);
+
+      carousel.appendChild(item);
+      mediaObserver.observe(item);
+    });
+
+    if (familyPosts.length > 1 && carousel.children.length > 1) {
+      const firstChild = carousel.children[0];
+      const lastChild = carousel.children[carousel.children.length - 1];
+      const cloneFirst = firstChild.cloneNode(true);
+      const cloneLast = lastChild.cloneNode(true);
+      cloneFirst.dataset.isClone = "true";
+      cloneLast.dataset.isClone = "true";
+      carousel.insertBefore(cloneLast, firstChild);
+      carousel.appendChild(cloneFirst);
+      mediaObserver.observe(cloneLast);
+      mediaObserver.observe(cloneFirst);
+    }
+
+    let targetIndex = familyPosts.findIndex((p) => String(p.id) === String(post.id));
+    if (targetIndex === -1) targetIndex = 0;
+
+    indicator.style.display = "block";
+    indicator.style.pointerEvents = "auto";
+    const hasParentInList = familyPosts.some((p) => String(p.id) === String(rootParentId));
+    const isParent = String(familyPosts[targetIndex].id) === String(rootParentId);
+    const childNum = hasParentInList ? targetIndex : targetIndex + 1;
+    const label = isParent ? "Parent" : `Child ${childNum}`;
+    indicator.innerHTML = `<span class="carousel-family-badge">${label}</span> ${targetIndex + 1} / ${familyPosts.length}`;
+
+    requestAnimationFrame(() => {
+      const targetEl = carousel.children[targetIndex + 1];
+      if (targetEl) {
+        carousel.scrollLeft = targetEl.offsetLeft;
+      }
+      carousel._restingScrollLeft = carousel.scrollLeft;
+    });
+  });
+}
+
 export function createPostCard(post) {
   if (window.pawHideWip || localStorage.getItem("paw_hide_wip") === "true") {
     const postTitle = (post?.title || post?.subject || "").trim();
@@ -1395,6 +1925,14 @@ export function createPostCard(post) {
       if (wipRegex.test(postTitle)) {
         return null;
       }
+    }
+  }
+
+  if (state.currentSite === "e621" && isE621BlacklistEnabled()) {
+    const rawBlacklist = getE621Blacklist();
+    const rules = parseBlacklist(rawBlacklist);
+    if (rules.length > 0 && isPostBlacklisted(post, rules)) {
+      return null;
     }
   }
 
@@ -1428,7 +1966,7 @@ export function createPostCard(post) {
       const fileName = (fileObj.name || fileObj.path.split("/").pop()).toLowerCase();
       if (/(^|[\?&]f=)cover\.(jpe?g|png|webp|gif|bmp)/i.test(fileName)) return;
     }
-    const ext = fileObj.path.split(".").pop().toLowerCase();
+    const ext = ((fileObj.name || fileObj.path).split(".").pop() || "jpg").toLowerCase();
     if (supportedExts.includes(ext) && !allMedia.some((m) => m.path === fileObj.path)) {
       allMedia.push({
         path: fileObj.path,
@@ -1439,7 +1977,7 @@ export function createPostCard(post) {
   }
 
   if (post.file) categorizeFile(post.file);
-  if (post.attachments && post.attachments.length > 0) {
+  if (post.service !== "e621" && post.attachments && post.attachments.length > 0) {
     post.attachments.forEach((att) => categorizeFile(att));
   }
 
@@ -1625,7 +2163,7 @@ export function createPostCard(post) {
         item.dataset.postTitle = mediaObj.postTitle || "";
         item.dataset.isExternal = "true";
       } else {
-        const ext = mediaPath.split(".").pop().toLowerCase();
+        const ext = ((mediaObj.name || mediaPath).split(".").pop() || "jpg").toLowerCase();
         const isVideo = ["mp4", "webm", "mov"].includes(ext);
         const isAudio = ["mp3", "ogg", "wav", "m4a"].includes(ext);
         const isGif = ext === "gif";
@@ -1677,7 +2215,10 @@ export function createPostCard(post) {
 
     indicator.addEventListener("click", (e) => {
       e.stopPropagation();
-      const target = allMedia.length > 1
+      const count = carousel.dataset.mediaCount
+        ? parseInt(carousel.dataset.mediaCount, 10)
+        : allMedia.length;
+      const target = count > 1
         ? (carousel.children[1] ? carousel.children[1].offsetLeft : (carousel.clientWidth || window.innerWidth))
         : 0;
       smoothScroll(carousel, target, window.pawAnimationsDisabled ? 0 : 140);
@@ -1707,10 +2248,13 @@ export function createPostCard(post) {
 
     carousel.addEventListener("touchend", () => {
       carousel._isTouching = false;
-      if (allMedia.length > 1 && !carousel._animId) {
+      const count = carousel.dataset.mediaCount
+        ? parseInt(carousel.dataset.mediaCount, 10)
+        : allMedia.length;
+      if (count > 1 && !carousel._animId) {
         clearTimeout(scrollSettleTimer);
         scrollSettleTimer = setTimeout(() => {
-          handleCarouselScrollSettled(carousel, allMedia.length);
+          handleCarouselScrollSettled(carousel, count);
           carousel._restingScrollLeft = carousel.scrollLeft;
         }, 150);
       }
@@ -1725,13 +2269,31 @@ export function createPostCard(post) {
         carousel.scrollLeft = carousel._restingScrollLeft;
         return;
       }
-      const count = allMedia.length;
+      const count = carousel.dataset.mediaCount
+        ? parseInt(carousel.dataset.mediaCount, 10)
+        : allMedia.length;
       if (count > 1) {
         const { firstOffset, step } = getCarouselMetrics(carousel);
         if (!step) return;
         const rawIndex = Math.round((carousel.scrollLeft - firstOffset) / step) + 1;
         const realIndex = ((rawIndex - 1) % count + count) % count;
-        indicator.textContent = `${realIndex + 1} / ${count}`;
+
+        if (carousel._familyPosts && carousel._familyPosts[realIndex]) {
+          const activePost = carousel._familyPosts[realIndex];
+          const rootParentId = activePost.relationships?.parent_id || activePost.id;
+          const hasParentInList = carousel._familyPosts.some((p) => String(p.id) === String(rootParentId));
+          const isParent = String(activePost.id) === String(rootParentId);
+          const childNum = hasParentInList ? realIndex : realIndex + 1;
+          const label = isParent ? "Parent" : `Child ${childNum}`;
+          indicator.innerHTML = `<span class="carousel-family-badge">${label}</span> ${realIndex + 1} / ${count}`;
+          if (card._post !== activePost) {
+            card._post = activePost;
+            renderPostInfoSection(activePost, author, title, content);
+          }
+        } else {
+          indicator.textContent = `${realIndex + 1} / ${count}`;
+        }
+
         if (!carousel._animId && !carousel._isTouching) {
           clearTimeout(scrollSettleTimer);
           scrollSettleTimer = setTimeout(() => {
@@ -1745,13 +2307,20 @@ export function createPostCard(post) {
     });
 
     carousel.addEventListener("scrollend", () => {
+      const count = carousel.dataset.mediaCount
+        ? parseInt(carousel.dataset.mediaCount, 10)
+        : allMedia.length;
       if (!carousel._animId && !carousel._isTouching) {
-        handleCarouselScrollSettled(carousel, allMedia.length);
+        handleCarouselScrollSettled(carousel, count);
         carousel._restingScrollLeft = carousel.scrollLeft;
       }
     });
 
     card.appendChild(carousel);
+
+    if (post.service === "e621" && (post.relationships?.parent_id || post.relationships?.has_children)) {
+      setupE621FamilyCarousel(card, post, carousel, indicator, author, title, content);
+    }
 
     const info = document.createElement("div");
     info.className = "post-info";
@@ -1783,6 +2352,16 @@ export function createPostCard(post) {
   }, { passive: true });
 
   card.addEventListener("click", (e) => {
+    // 1. If post-info is expanded: clicking outside closes it
+    const expandedInfo = document.querySelector(".post-info.expanded");
+    if (expandedInfo) {
+      if (e.target.closest(".post-info")) {
+        return;
+      }
+      closeAllPostInfo();
+      return;
+    }
+
     if (e.target.tagName.toLowerCase() === "a" || e.target.closest("a")) return;
     if (e.target.tagName.toLowerCase() === "button" || e.target.closest("button")) return;
     if (e.target.closest(".zip-info-text")) return;
@@ -1819,24 +2398,22 @@ export function createPostCard(post) {
       return;
     }
 
-    const infoEl = card.querySelector(".post-info");
-    if (infoEl && infoEl.classList.contains("expanded") && e.target.closest(".post-info")) {
-      return;
-    }
-
     const leftThreshold = w * (edgeCfg.left ?? 0.05);
     const rightThreshold = w * (1 - (edgeCfg.right ?? 0.05));
     const topThreshold = h * (edgeCfg.top ?? 0.05);
     const bottomThreshold = h * (1 - (edgeCfg.bottom ?? 0.05));
 
     const carousel = card.querySelector(".media-carousel");
-    if (carousel && allMedia.length > 1) {
+    const mediaCount = carousel?.dataset.mediaCount
+      ? parseInt(carousel.dataset.mediaCount, 10)
+      : allMedia.length;
+    if (carousel && mediaCount > 1) {
       if (x < leftThreshold) {
-        navigateCarousel(carousel, "left", allMedia.length);
+        navigateCarousel(carousel, "left", mediaCount);
         return;
       }
       if (x > rightThreshold) {
-        navigateCarousel(carousel, "right", allMedia.length);
+        navigateCarousel(carousel, "right", mediaCount);
         return;
       }
     }
@@ -1961,57 +2538,234 @@ export function updateFeedLoading(customText = null) {
   feedLoading.innerHTML = `<span class="loading-spinner"></span><span>${escapeHtml(text)}</span>`;
 }
 
+export function transformE621PostClient(p) {
+  const artistTags = (p.tags && Array.isArray(p.tags.artist)) ? p.tags.artist : [];
+  const contributorTags = (p.tags && Array.isArray(p.tags.contributor)) ? p.tags.contributor : [];
+  const characterTags = (p.tags && Array.isArray(p.tags.character)) ? p.tags.character : [];
+  const speciesTags = (p.tags && Array.isArray(p.tags.species)) ? p.tags.species : [];
+  const generalTags = (p.tags && Array.isArray(p.tags.general)) ? p.tags.general : [];
+  const copyrightTags = (p.tags && Array.isArray(p.tags.copyright)) ? p.tags.copyright : [];
+  const loreTags = (p.tags && Array.isArray(p.tags.lore)) ? p.tags.lore : [];
+  const metaTags = (p.tags && Array.isArray(p.tags.meta)) ? p.tags.meta : [];
+  const invalidTags = (p.tags && Array.isArray(p.tags.invalid)) ? p.tags.invalid : [];
+
+  const artistName = artistTags.length > 0 ? artistTags[0] : (p.uploader_name || "e621");
+
+  const fileObj = p.file || {};
+  const ext = (fileObj.ext || "jpg").toLowerCase();
+  const md5 = fileObj.md5 || "";
+  let mainUrl = fileObj.url || "";
+  if (!mainUrl && md5) {
+    mainUrl = `https://static1.e621.net/data/${md5.slice(0, 2)}/${md5.slice(2, 4)}/${md5}.${ext}`;
+  }
+  const sampleObj = p.sample || {};
+  const sampleUrl = sampleObj.has && sampleObj.url ? sampleObj.url : (md5 ? `https://static1.e621.net/data/sample/${md5.slice(0, 2)}/${md5.slice(2, 4)}/${md5}.jpg` : "");
+  const previewObj = p.preview || {};
+  const previewUrl = previewObj.url || (md5 ? `https://static1.e621.net/data/preview/${md5.slice(0, 2)}/${md5.slice(2, 4)}/${md5}.jpg` : "");
+
+  const cleanPath = (u) => {
+    if (!u) return "";
+    const idx = u.indexOf("/data/");
+    if (idx !== -1) {
+      const sub = u.slice(idx + 5);
+      return sub.startsWith("/") ? sub : `/${sub}`;
+    }
+    return u.startsWith("/") ? u : `/${u}`;
+  };
+
+  const primaryPath = md5
+    ? `/${md5.slice(0, 2)}/${md5.slice(2, 4)}/${md5}.${ext}`
+    : cleanPath(mainUrl || sampleUrl);
+  const cleanSample = cleanPath(sampleUrl);
+  const cleanPreview = cleanPath(previewUrl);
+
+  const allTags = [
+    ...artistTags,
+    ...contributorTags,
+    ...characterTags,
+    ...speciesTags,
+    ...generalTags,
+    ...copyrightTags,
+    ...loreTags,
+    ...metaTags,
+    ...invalidTags
+  ];
+
+  const tagsCategorized = {
+    artist: artistTags,
+    contributor: contributorTags,
+    character: characterTags,
+    species: speciesTags,
+    general: generalTags,
+    copyright: copyrightTags,
+    lore: loreTags,
+    meta: metaTags,
+    invalid: invalidTags
+  };
+
+  return {
+    id: String(p.id),
+    user: artistName,
+    artists: artistTags,
+    service: "e621",
+    title: "",
+    published: p.created_at || new Date().toISOString(),
+    added: p.created_at || new Date().toISOString(),
+    edited: p.updated_at || null,
+    content: p.description || "",
+    description: p.description || "",
+    file: {
+      name: `${p.id}.${ext}`,
+      path: primaryPath,
+      size: fileObj.size || 0,
+      width: fileObj.width || 0,
+      height: fileObj.height || 0
+    },
+    attachments: [],
+    preview_url: cleanPreview,
+    sample_url: cleanSample,
+    tags: allTags,
+    tags_categorized: tagsCategorized,
+    relationships: p.relationships || {
+      parent_id: null,
+      has_children: false,
+      children: []
+    },
+    rating: p.rating || "s",
+    score: p.score && typeof p.score.total === "number" ? p.score.total : (typeof p.score === "number" ? p.score : 0),
+    fav_count: p.fav_count || 0
+  };
+}
+
+export async function fetchWithRetry(url, options = {}, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429 && i < retries) {
+        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (i === retries) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.fetchWithRetry = fetchWithRetry;
+}
+
 export async function fetchPosts() {
   if (state.isFetching || !state.hasMore) return;
   state.isFetching = true;
   updateFeedLoading();
   if (feedLoading) feedLoading.classList.add("active");
-  startProgress();
 
   try {
-    const isAnnouncements = state.currentFeedEndpoint.includes("/announcements");
-    const isFancards = state.currentFeedEndpoint.includes("/fancards");
-    const isSinglePageFeed = isAnnouncements || isFancards;
-    const separator = state.currentFeedEndpoint.includes("?") ? "&" : "?";
-    const url = isSinglePageFeed
-      ? state.currentFeedEndpoint
-      : `${state.currentFeedEndpoint}${separator}o=${state.offset}`;
+    const isSinglePageFeed =
+      state.currentFeedEndpoint &&
+      (state.currentFeedEndpoint.includes("/tags") ||
+        state.currentFeedEndpoint.includes("/lookup") ||
+        state.currentFeedEndpoint.includes("/links") ||
+        state.currentFeedEndpoint.includes("/similar"));
+    const isAnnouncements = state.currentFeedEndpoint && state.currentFeedEndpoint.includes("/announcements");
+    const isFancards = state.currentFeedEndpoint && state.currentFeedEndpoint.includes("/fancards");
+    const isTags = state.currentFeedEndpoint && state.currentFeedEndpoint.includes("/tags");
 
     let res;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+    if (state.currentSite === "e621") {
+      const e621Headers = getE621Headers();
+      // 1. Primary: Direct fetch to e621 (native CORS, residential IP avoids bot blocks)
+      const artistMatch = state.currentFeedEndpoint.match(/\/api\/v1\/e621\/user\/([^\/]+)\/posts/);
+      const artistTag = artistMatch ? decodeURIComponent(artistMatch[1]) : "";
+      const incomingUrl = new URL(state.currentFeedEndpoint, window.location.href);
+      const isPopularEndpoint = state.currentFeedEndpoint.includes("/popular");
+      const q = incomingUrl.searchParams.get("tags") || incomingUrl.searchParams.get("q") || incomingUrl.searchParams.get("tag") || (isPopularEndpoint ? "order:rank" : "");
+      const effectiveTags = artistTag || q;
+      const page = Math.max(1, Math.floor(state.offset / 50) + 1);
+
+      const directUrl = new URL("https://e621.net/posts.json");
+      directUrl.searchParams.set("page", String(page));
+      directUrl.searchParams.set("limit", "50");
+      if (effectiveTags) {
+        directUrl.searchParams.set("tags", effectiveTags);
+      }
+
       try {
-        res = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        if (res.status === 429 && attempt === 0) {
-          updateFeedLoading("Rate limited (429), retrying in 1.5s...");
-          await new Promise((r) => setTimeout(r, 1500));
-          updateFeedLoading();
-          continue;
+        const directRes = await fetch(directUrl.toString(), { headers: e621Headers });
+        if (directRes.ok) {
+          res = directRes;
         }
-        break;
-      } catch (e) {
-        clearTimeout(timeoutId);
-        if (attempt === 0) {
-          updateFeedLoading("Connection failed, retrying...");
-          await new Promise((r) => setTimeout(r, 1000));
-          updateFeedLoading();
-          continue;
+      } catch (_) {}
+
+      // 2. Fallback: Proxy worker if direct fetch failed (e.g. ISP censorship)
+      if (!res || !res.ok) {
+        let proxyUrl = state.currentFeedEndpoint;
+        const separator = proxyUrl.includes("?") ? "&" : "?";
+        proxyUrl += `${separator}o=${state.offset}`;
+        try {
+          res = await fetchWithRetry(proxyUrl, { headers: e621Headers });
+        } catch (_) {}
+      }
+    } else {
+      let url = state.currentFeedEndpoint;
+      if (!isSinglePageFeed) {
+        const separator = url.includes("?") ? "&" : "?";
+        url += `${separator}o=${state.offset}`;
+      }
+
+      let attempts = 0;
+      while (attempts < 3) {
+        attempts++;
+        try {
+          res = await fetchWithRetry(url);
+          break;
+        } catch (e) {
+          if (attempts < 3) {
+            await new Promise((r) => setTimeout(r, 1000));
+            updateFeedLoading();
+            continue;
+          }
+          throw e;
         }
-        throw e;
       }
     }
 
     if (!res || !res.ok) throw new Error("Failed to fetch: " + (res ? `${res.status} ${res.statusText}` : "timeout"));
 
     let posts = await res.json();
-    if (!Array.isArray(posts)) {
-      posts = posts.posts || posts.announcements || posts.dms || posts.fancards || [];
+    let rawBatchCount = 0;
+    if (posts && Array.isArray(posts.posts)) {
+      rawBatchCount = posts.posts.length;
+      posts = posts.posts.map(transformE621PostClient);
+      if (isE621BlacklistEnabled()) {
+        const rules = parseBlacklist(getE621Blacklist());
+        if (rules.length > 0) {
+          posts = posts.filter((p) => !isPostBlacklisted(p, rules));
+        }
+      }
+    } else if (!Array.isArray(posts)) {
+      posts = posts.announcements || posts.dms || posts.fancards || [];
+      rawBatchCount = posts.length;
+    } else {
+      rawBatchCount = posts.length;
+      if (state.currentSite === "e621" && isE621BlacklistEnabled()) {
+        const rules = parseBlacklist(getE621Blacklist());
+        if (rules.length > 0) {
+          posts = posts.filter((p) => !isPostBlacklisted(p, rules));
+        }
+      }
     }
 
     if (isSinglePageFeed) state.hasMore = false;
     if (!Array.isArray(posts) || posts.length === 0) {
+      if (rawBatchCount > 0 && isSinglePageFeed === false) {
+        state.offset += rawBatchCount;
+        fetchPosts();
+        return;
+      }
       state.hasMore = false;
     } else {
       const catName = isAnnouncements ? "announcements" : isFancards ? "fancards" : "posts";
@@ -2044,12 +2798,12 @@ export async function fetchPosts() {
         }
       });
 
-      state.offset += posts.length;
+      state.offset += (rawBatchCount || posts.length);
       const cards = feed.querySelectorAll(".post-card");
       if (cards.length > 0) {
         feedObserver.observe(cards[cards.length - 1]);
       }
-      if (addedCount === 0 && posts.length > 0) {
+      if (addedCount === 0 && rawBatchCount > 0) {
         fetchPosts();
       }
     }
@@ -2061,4 +2815,22 @@ export async function fetchPosts() {
     if (feedLoading) feedLoading.classList.remove("active");
     stopProgress();
   }
+}
+
+export function applyBlacklistToCurrentFeed() {
+  if (state.currentSite !== "e621") return;
+  const feed = document.getElementById("feed");
+  if (!feed) return;
+  const cards = feed.querySelectorAll(".post-card");
+  const rules = parseBlacklist(getE621Blacklist());
+  const enabled = isE621BlacklistEnabled();
+  cards.forEach((card) => {
+    if (card._post) {
+      if (enabled && rules.length > 0 && isPostBlacklisted(card._post, rules)) {
+        card.style.display = "none";
+      } else {
+        card.style.display = "";
+      }
+    }
+  });
 }

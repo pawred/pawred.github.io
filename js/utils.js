@@ -9,6 +9,22 @@ export function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
+export async function fetchWithRetry(url, options = {}, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429 && i < retries) {
+        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (i === retries) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+}
+
 export function showMediaUnavailableWarning(container, optionsOrType = "media", filename = "", errorStatus = "404", onRetry = null) {
   if (!container) return;
   container.style.display = "flex";
@@ -43,7 +59,7 @@ export function showMediaUnavailableWarning(container, optionsOrType = "media", 
     retryFn = onRetry || null;
   }
 
-  const displayNames = { pawchive: "Pawchive", kemono: "Kemono", cum: "Coomer" };
+  const displayNames = { pawchive: "Pawchive", kemono: "Kemono", cum: "Coomer", e621: "e621" };
   const siteName = displayNames[state.currentSite] || state.currentSite;
   const isRateLimited = String(status) === "429";
   const isServerError = ["500", "502", "503", "504"].includes(String(status));
@@ -125,12 +141,14 @@ export function getServiceColor(service) {
   if (s === "gumroad") return "#FF90E8";
   if (s === "boosty") return "linear-gradient(to bottom, #EF7829, #EC5B2B)";
   if (s === "fantia") return "linear-gradient(to right, #8CC13F, #E1097F, #8D2680, #00A098, #383877, #F05B26)";
+  if (s === "e621") return "#00549e";
   return "#222";
 }
 
 export function getSiteDomain() {
   if (state.currentSite === "kemono") return "kemono.cr";
   if (state.currentSite === "cum") return "cum.st";
+  if (state.currentSite === "e621") return "e621.net";
   return "pawchive.pw";
 }
 
@@ -138,6 +156,9 @@ export function getServiceCreatorUrl(service, userId) {
   const domain = getSiteDomain();
   const s = encodeURIComponent((service || "").toLowerCase());
   const id = encodeURIComponent(userId || "");
+  if (state.currentSite === "e621") {
+    return `https://${domain}/posts?tags=${id}`;
+  }
   if (state.currentSite === "cum") {
     return `https://${domain}/creators/${s}/${id}`;
   }
@@ -149,6 +170,10 @@ export function getServicePostUrl(service, userId, postId) {
   const s = encodeURIComponent((service || "").toLowerCase());
   const uid = encodeURIComponent(userId || "");
   const pid = encodeURIComponent(postId || "");
+
+  if (state.currentSite === "e621") {
+    return `https://${domain}/posts/${pid}`;
+  }
 
   if (state.currentFeedEndpoint && state.currentFeedEndpoint.includes("fancards")) {
     if (state.currentSite === "cum") {
@@ -188,10 +213,17 @@ export function getServicePostUrl(service, userId, postId) {
 export function getMediaUrl(path) {
   if (!path) return null;
   if (path.startsWith(PROXY_URL)) return path;
+  if (state.currentSite === "e621") {
+    if (path.includes("static1.e621.net/data/") || path.includes("static1.e926.net/data/")) {
+      const sub = path.split("/data/")[1];
+      return `${PROXY_URL}/e621/file/data/${sub}`;
+    }
+  }
   if (path.startsWith("http://") || path.startsWith("https://")) {
     return `${PROXY_URL}/proxy?url=${encodeURIComponent(path)}`;
   }
-  return `${PROXY_URL}/${state.currentSite}/file/data${path}`;
+  const clean = path.startsWith("/") ? path : `/${path}`;
+  return `${PROXY_URL}/${state.currentSite}/file/data${clean}`;
 }
 
 const topProgress = document.getElementById("top-progress");

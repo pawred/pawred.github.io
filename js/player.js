@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { updateNavVisibility } from "./nav.js";
+import { updateNavVisibility, closeAllPostInfo } from "./nav.js";
 
 function formatTime(seconds) {
   if (isNaN(seconds) || seconds < 0 || !isFinite(seconds)) return "0:00";
@@ -510,6 +510,16 @@ export function attachCustomVideoPlayer(video, container) {
   }, { passive: true });
 
   overlay.addEventListener("click", (e) => {
+    const expandedInfo = document.querySelector(".post-info.expanded");
+    if (expandedInfo) {
+      if (e.target.closest(".post-info")) {
+        return;
+      }
+      e.stopPropagation();
+      closeAllPostInfo();
+      return;
+    }
+
     if (e.target.closest("button, .player-timeline, .player-volume-slider, a")) {
       return;
     }

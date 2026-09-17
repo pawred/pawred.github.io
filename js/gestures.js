@@ -103,7 +103,7 @@ export function initGestures() {
       }, 150);
 
       clearTimeout(recycleTimeout);
-      recycleTimeout = setTimeout(recycleOffscreenCards, 80);
+      recycleTimeout = setTimeout(recycleOffscreenCards, 200);
     });
   }
 

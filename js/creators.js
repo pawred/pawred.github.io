@@ -1,5 +1,5 @@
 import { PROXY_URL, state } from "./state.js";
-import { getServiceColor, startProgress, stopProgress, escapeHtml } from "./utils.js";
+import { getServiceColor, startProgress, stopProgress, escapeHtml, fetchWithRetry } from "./utils.js";
 import { updateNavTabs, showView, navBack, feedView } from "./nav.js";
 import { resetFeed, fetchPosts } from "./feed.js";
 
@@ -35,6 +35,7 @@ export const SITE_SERVICES = {
   kemono: ["boosty", "dlsite", "fanbox", "fantia", "gumroad", "patreon", "subscribestar"],
   pawchive: ["fanbox", "patreon"],
   cum: ["fansly", "onlyfans", "patreon"],
+  e621: ["e621"],
 };
 
 export const SERVICE_LABELS = {
@@ -47,6 +48,7 @@ export const SERVICE_LABELS = {
   subscribestar: "SubscribeStar",
   onlyfans: "OnlyFans",
   fansly: "Fansly",
+  e621: "e621",
 };
 
 let currentRenderedFilterSite = null;
@@ -132,22 +134,6 @@ export function getPaginationContainers() {
   if (paginationTopContainer) containers.push(paginationTopContainer);
   if (paginationContainer) containers.push(paginationContainer);
   return containers;
-}
-
-async function fetchWithRetry(url, options = {}, retries = 2) {
-  for (let i = 0; i <= retries; i++) {
-    try {
-      const res = await fetch(url, options);
-      if (res.status === 429 && i < retries) {
-        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
-        continue;
-      }
-      return res;
-    } catch (err) {
-      if (i === retries) throw err;
-      await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
-    }
-  }
 }
 
 let coomerFetchSeq = 0;
@@ -305,10 +291,41 @@ export async function loadCreators() {
   startProgress();
 
   try {
-    const res = await fetchWithRetry(`${PROXY_URL}/${currentSiteAtCall}/api/v1/creators`);
+    let res;
+    if (currentSiteAtCall === "e621") {
+      try {
+        const query = searchInput ? searchInput.value.trim() : "";
+        let directUrl = "https://e621.net/tags.json?search[category]=1&search[order]=count&limit=100";
+        if (query) {
+          directUrl += `&search[name_matches]=*${encodeURIComponent(query.toLowerCase())}*`;
+        }
+        res = await fetch(directUrl);
+      } catch (_) {}
+
+      if (!res || !res.ok) {
+        try {
+          res = await fetchWithRetry(`${PROXY_URL}/${currentSiteAtCall}/api/v1/creators`);
+        } catch (fetchErr) {
+          res = null;
+        }
+      }
+    } else {
+      res = await fetchWithRetry(`${PROXY_URL}/${currentSiteAtCall}/api/v1/creators`);
+    }
+
     if (loadSeq !== creatorsLoadSeq || state.currentSite !== currentSiteAtCall) return;
-    if (!res.ok) throw new Error("Failed to fetch creators: " + res.status + " " + res.statusText);
-    const rawCreators = await res.json();
+    if (!res || !res.ok) throw new Error("Failed to fetch creators: " + (res ? `${res.status} ${res.statusText}` : "timeout"));
+    let rawCreators = await res.json();
+    if (currentSiteAtCall === "e621" && Array.isArray(rawCreators) && rawCreators.length > 0 && rawCreators[0].post_count !== undefined && !rawCreators[0].service) {
+      rawCreators = rawCreators.map((t) => ({
+        id: t.name,
+        name: t.name.replace(/_/g, " "),
+        service: "e621",
+        favorited: t.post_count || 0,
+        postCount: t.post_count || 0,
+        updated: "2026-01-01"
+      }));
+    }
     const uniqueCreators = new Map();
     const nameToRelationId = new Map();
 
@@ -465,7 +482,10 @@ export function buildCreatorCard(creator, checkedServices = []) {
   img.className = "creator-image";
 
   function setAvatar(p) {
-    if (state.currentSite === "cum") {
+    if (state.currentSite === "e621") {
+      img.style.display = "none";
+      img.src = "";
+    } else if (state.currentSite === "cum") {
       if (p.avatarThumbhash === null || p.avatarThumbhash === false) {
         img.style.display = "none";
         img.src = "";
