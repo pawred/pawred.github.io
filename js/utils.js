@@ -213,7 +213,13 @@ export function stopProgress() {
 export function renderMediaProgress(container, status = "Loading...", percent = null, filename = "", loadedStr = "", totalStr = "") {
   if (!container) return;
   container.classList.remove("media-error");
-  container.classList.add("media-loading");
+  if (status === "Loaded") {
+    container.classList.remove("media-loading");
+    container.classList.add("media-loaded");
+  } else {
+    container.classList.remove("media-loaded");
+    container.classList.add("media-loading");
+  }
   container.style.pointerEvents = "none";
 
   if (!totalStr || totalStr === "...") {
@@ -248,6 +254,23 @@ export function renderMediaProgress(container, status = "Loading...", percent = 
     ${filenameHtml}
     ${sizeHtml}
   `;
+}
+
+export function markMediaLoaded(container, filename = "", totalSizeStr = "") {
+  if (!container) return;
+  container.dataset.loaded = "true";
+  delete container.dataset.loading;
+  delete container.dataset.failed;
+  container.classList.add("media-loaded");
+  container.classList.remove("media-has-preview");
+
+  const progress = container.querySelector(".media-progress");
+  if (progress) {
+    progress.classList.remove("media-loading");
+    progress.classList.add("media-loaded");
+    progress.style.display = "none";
+    progress.innerHTML = "";
+  }
 }
 
 export function renderArchiveProgress(container, status = "Loading...", percent = null, title = "", loadedStr = "", totalStr = "", extraDetail = "") {

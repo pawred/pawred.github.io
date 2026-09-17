@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="color-scheme" content="dark">
-  <title>paw-reader</title>
+  <title>pawr</title>
   <link rel="stylesheet" href="style.css?v=2.15">
-  <link rel="icon" type="image/svg+xml" href="icons/patreon.svg">
+  <link rel="icon" type="image" href="icons/paw.png">
 </head>
 <body>
   <div id="top-progress"></div>
@@ -77,6 +77,14 @@
         <input type="checkbox" id="setting-hide-no-media" style="width: 18px; height: 18px; cursor: pointer;">
       </label>
       <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-top: 15px;">
+        <span>Hide text posts</span>
+        <input type="checkbox" id="setting-hide-text" style="width: 18px; height: 18px; cursor: pointer;">
+      </label>
+      <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-top: 15px;">
+        <span>Hide WIP posts</span>
+        <input type="checkbox" id="setting-hide-wip" style="width: 18px; height: 18px; cursor: pointer;">
+      </label>
+      <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-top: 15px;">
         <span>Disable animations</span>
         <input type="checkbox" id="setting-disable-animations" style="width: 18px; height: 18px; cursor: pointer;">
       </label>
@@ -115,7 +123,7 @@
 
   <!-- Welcome Screen -->
   <div id="welcome-screen" class="view active">
-    <h1>Welcome to Paw Reader!</h1>
+    <h1>Welcome to pawr!</h1>
     <p>What would you like to explore today?</p>
     <div class="site-selection" style="margin-bottom: 30px;">
       <label for="site-selector" style="color:#ccc; font-size:1.1rem; margin-right:10px;">Select Source:</label>

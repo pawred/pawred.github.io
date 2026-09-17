@@ -946,23 +946,39 @@ body.nav-visible .carousel-indicator {
   transition: opacity 0.25s ease-in-out, visibility 0.25s ease-in-out;
 }
 
-/* Loading text overlay only appears when nav buttons are also visible */
-body:not(.nav-visible) .media-progress.media-loading,
-body:not(.nav-visible) .media-progress:not(.media-error):not(:has(.retry-media-btn)):not(:has(.external-media-btn)) {
+/* 1. When background is black (file didn't load yet, still loading):
+      Always show the loading text overlay, even when nav tabs are hidden */
+.media-progress,
+.media-progress.media-loading,
+#zip-viewer .media-progress,
+#zip-viewer .media-progress.media-loading {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* 2. When the media is STILL LOADING, but a preview/poster is shown:
+      Hide the loading overlay when nav tabs are hidden, show when nav tabs are visible */
+body:not(.nav-visible) .media-item.media-has-preview .media-progress:not(.media-error):not(:has(.retry-media-btn)):not(:has(.external-media-btn)),
+#zip-nav:not(.visible) ~ * .media-item.media-has-preview .media-progress:not(.media-error):not(:has(.retry-media-btn)):not(:has(.external-media-btn)) {
   opacity: 0 !important;
   visibility: hidden !important;
   pointer-events: none !important;
 }
 
-body.nav-visible .media-progress {
-  opacity: 1;
-  visibility: visible;
-}
-
-#zip-viewer .media-progress,
-#zip-viewer .media-progress.media-loading {
+:is(body.nav-visible, #zip-nav.visible ~ *, body:has(#zip-nav.visible)) .media-item.media-has-preview:not(.media-loaded):not([data-loaded="true"]) .media-progress:not(.media-error) {
+  display: flex !important;
   opacity: 1 !important;
   visibility: visible !important;
+}
+
+/* 3. If media is ALREADY LOADED: do NOT display any text */
+.media-item.media-loaded .media-progress:not(.media-error):not(:has(.retry-media-btn)):not(:has(.external-media-btn)),
+.media-item[data-loaded="true"] .media-progress:not(.media-error):not(:has(.retry-media-btn)):not(:has(.external-media-btn)),
+.media-progress.media-loaded:not(.media-error):not(:has(.retry-media-btn)):not(:has(.external-media-btn)) {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
 .media-progress:has(.retry-media-btn),

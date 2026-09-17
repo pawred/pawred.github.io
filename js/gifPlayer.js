@@ -7,7 +7,7 @@
 // 4. Duck-typed HTMLVideoElement for seamless connection with attachCustomVideoPlayer.
 
 import { attachCustomVideoPlayer } from "./player.js";
-import { formatBytes, renderMediaProgress, showMediaUnavailableWarning } from "./utils.js";
+import { formatBytes, renderMediaProgress, showMediaUnavailableWarning, markMediaLoaded } from "./utils.js";
 import { PROXY_URL, state } from "./state.js";
 
 // ============================================================================
@@ -903,14 +903,14 @@ export async function loadGifPlayer({
     img.src = url;
 
     img.onload = () => {
-      item.dataset.loaded = "true";
-      delete item.dataset.loading;
-      if (progressOverlay) progressOverlay.style.display = "none";
+      markMediaLoaded(item, filename);
       if (typeof syncCarouselClones === "function") syncCarouselClones(item);
     };
     img.onerror = () => {
       delete item.dataset.loading;
       delete item.dataset.loaded;
+      item.classList.remove("media-loaded");
+      item.classList.remove("media-has-preview");
       if (progressOverlay) progressOverlay.style.display = "flex";
       showMediaUnavailableWarning(progressOverlay, {
         type: "image",
@@ -945,6 +945,9 @@ export async function loadGifPlayer({
     posterImg = document.createElement("img");
     posterImg.className = "post-media";
     posterImg.loading = "eager";
+    posterImg.onload = () => {
+      item.classList.add("media-has-preview");
+    };
     posterImg.src = `${PROXY_URL}/${state.currentSite}/thumbnail/data${path}`;
     item.appendChild(posterImg);
   }
@@ -1059,9 +1062,7 @@ export async function loadGifPlayer({
       img.src = blobUrl;
 
       img.onload = () => {
-        item.dataset.loaded = "true";
-        delete item.dataset.loading;
-        if (progressOverlay) progressOverlay.style.display = "none";
+        markMediaLoaded(item, filename);
         if (typeof syncCarouselClones === "function") syncCarouselClones(item);
       };
       img.onerror = () => {
@@ -1137,9 +1138,7 @@ export async function loadGifPlayer({
       };
 
       img.onload = () => {
-        item.dataset.loaded = "true";
-        delete item.dataset.loading;
-        if (progressOverlay) progressOverlay.style.display = "none";
+        markMediaLoaded(item, filename);
         if (typeof syncCarouselClones === "function") syncCarouselClones(item);
       };
       img.onerror = () => {
@@ -1223,9 +1222,7 @@ export async function loadGifPlayer({
     item.appendChild(canvas);
     attachCustomVideoPlayer(canvas, item);
 
-    item.dataset.loaded = "true";
-    delete item.dataset.loading;
-    if (progressOverlay) progressOverlay.style.display = "none";
+    markMediaLoaded(item, filename);
     if (typeof syncCarouselClones === "function") syncCarouselClones(item);
     if (playbackObserver) playbackObserver.observe(canvas);
 
@@ -1252,9 +1249,7 @@ export async function loadGifPlayer({
     fallbackImg.src = url;
 
     fallbackImg.onload = () => {
-      item.dataset.loaded = "true";
-      delete item.dataset.loading;
-      if (progressOverlay) progressOverlay.style.display = "none";
+      markMediaLoaded(item, filename);
       if (typeof syncCarouselClones === "function") syncCarouselClones(item);
     };
     fallbackImg.onerror = () => {
@@ -1269,9 +1264,7 @@ export async function loadGifPlayer({
         thumbImg.src = `${PROXY_URL}/${state.currentSite}/thumbnail/data${p}`;
 
         thumbImg.onload = () => {
-          item.dataset.loaded = "true";
-          delete item.dataset.loading;
-          if (progressOverlay) progressOverlay.style.display = "none";
+          markMediaLoaded(item, filename);
           if (typeof syncCarouselClones === "function") syncCarouselClones(item);
         };
         thumbImg.onerror = () => {

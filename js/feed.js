@@ -5,6 +5,7 @@ import {
   getMediaUrl,
   showMediaUnavailableWarning,
   renderMediaProgress,
+  markMediaLoaded,
   startProgress,
   stopProgress,
   getServiceCreatorUrl,
@@ -109,8 +110,7 @@ export function syncCarouselClones(item) {
   if (img) {
     const cloneImg = img.cloneNode(true);
     targetClone.appendChild(cloneImg);
-    if (cloneProgress) cloneProgress.style.display = "none";
-    targetClone.dataset.loaded = "true";
+    markMediaLoaded(targetClone, item.dataset.originalName);
   } else if (video || gifCanvas) {
     const path = item.dataset.path;
     const isImagePath = path && /\.(jpe?g|png|webp|gif|avif)$/i.test(path);
@@ -126,8 +126,7 @@ export function syncCarouselClones(item) {
       placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
       targetClone.appendChild(placeholder);
     }
-    if (cloneProgress) cloneProgress.style.display = "none";
-    targetClone.dataset.loaded = "true";
+    markMediaLoaded(targetClone, item.dataset.originalName);
   } else if (archiveCard) {
     if (targetClone.dataset.loaded === "true" && targetClone.querySelector(".ext-archive-card")) return;
     const cloneCard = archiveCard.cloneNode(true);
@@ -141,8 +140,7 @@ export function syncCarouselClones(item) {
       extLink.addEventListener("click", (e) => e.stopPropagation());
     }
     targetClone.appendChild(cloneCard);
-    if (cloneProgress) cloneProgress.style.display = "none";
-    targetClone.dataset.loaded = "true";
+    markMediaLoaded(targetClone, item.dataset.originalName);
   }
 }
 
@@ -295,12 +293,18 @@ export function detachMedia(item, force = false) {
 
   const progressOverlay = item.querySelector(".media-progress");
   if (progressOverlay) {
+    progressOverlay.classList.remove("media-loaded");
+    progressOverlay.classList.add("media-loading");
     progressOverlay.style.display = "flex";
     const filename = item.dataset.originalName || (item.dataset.path || "").split("/").pop() || "media";
     renderMediaProgress(progressOverlay, "Loading...", null, filename, "", "");
   }
 
   delete item.dataset.loaded;
+  delete item.dataset.loading;
+  delete item.dataset.failed;
+  item.classList.remove("media-loaded");
+  item.classList.remove("media-has-preview");
 }
 
 export function recycleOffscreenCards() {
@@ -782,7 +786,7 @@ export async function loadMediaWithProgress(item) {
     }
 
     const hideOverlay = () => {
-      if (progressOverlay) progressOverlay.style.display = "none";
+      markMediaLoaded(item, filename);
     };
 
     video.addEventListener("timeupdate", () => {
@@ -829,7 +833,7 @@ export async function loadMediaWithProgress(item) {
           thumbImg.loading = "eager";
           thumbImg.src = `${PROXY_URL}/${state.currentSite}/thumbnail/data${p}`;
           thumbImg.onload = () => {
-            if (progressOverlay) progressOverlay.style.display = "none";
+            markMediaLoaded(item, filename);
             syncCarouselClones(item);
           };
           thumbImg.onerror = () => {
@@ -868,7 +872,7 @@ export async function loadMediaWithProgress(item) {
         thumbImg.loading = "eager";
         thumbImg.src = `${PROXY_URL}/${state.currentSite}/thumbnail/data${path}`;
         thumbImg.onload = () => {
-          if (progressOverlay) progressOverlay.style.display = "none";
+          markMediaLoaded(item, filename);
           syncCarouselClones(item);
         };
         thumbImg.onerror = () => {
@@ -911,7 +915,10 @@ export async function loadMediaWithProgress(item) {
     const thumbUrl = `${PROXY_URL}/${state.currentSite}/thumbnail/data${path}`;
     img.src = thumbUrl;
     img.onload = () => {
-      if (progressOverlay) progressOverlay.style.display = "none";
+      item.classList.add("media-has-preview");
+      if (progressOverlay) {
+        renderMediaProgress(progressOverlay, "Loading...", null, filename, "", "");
+      }
       syncCarouselClones(item);
       if (url && url !== thumbUrl) {
         if (item._upgradeTimer) clearTimeout(item._upgradeTimer);
@@ -923,6 +930,7 @@ export async function loadMediaWithProgress(item) {
             if (item.isConnected && item._fullImg === fullImg) {
               img.src = url;
               item._fullImg = null;
+              markMediaLoaded(item, filename);
             }
           };
           fullImg.onerror = () => {
@@ -930,6 +938,8 @@ export async function loadMediaWithProgress(item) {
           };
           fullImg.src = url;
         }, 1200);
+      } else {
+        markMediaLoaded(item, filename);
       }
     };
     img.onerror = () => {
@@ -948,7 +958,7 @@ export async function loadMediaWithProgress(item) {
   } else {
     img.src = url;
     img.onload = () => {
-      if (progressOverlay) progressOverlay.style.display = "none";
+      markMediaLoaded(item, filename);
       syncCarouselClones(item);
     };
     img.onerror = () => {
@@ -1378,6 +1388,16 @@ export function getCurrentGalleryPost() {
 }
 
 export function createPostCard(post) {
+  if (window.pawHideWip || localStorage.getItem("paw_hide_wip") === "true") {
+    const postTitle = (post?.title || post?.subject || "").trim();
+    if (postTitle) {
+      const wipRegex = /(?:^|[^a-zA-Z0-9])(wip|w\.i\.p\.?|work[\s_-]+in[\s_-]+progress)(?:$|[^a-zA-Z0-9])/i;
+      if (wipRegex.test(postTitle)) {
+        return null;
+      }
+    }
+  }
+
   const card = document.createElement("div");
   card.className = "post-card";
   card._post = post;
@@ -1494,14 +1514,28 @@ export function createPostCard(post) {
   }
 
   const hasAvailableMedia = allMedia.some((m) => !m.isUnimported);
-  const settingHideNoMedia = document.getElementById("setting-hide-no-media");
-  if (!hasAvailableMedia && settingHideNoMedia && settingHideNoMedia.checked) {
+  const isHideNoMedia = window.pawHideNoMedia ?? (localStorage.getItem("paw_hideNoMedia") === "true");
+  const isHideText = window.pawHideText ?? (localStorage.getItem("paw_hide_text") === "true");
+
+  if (!hasAvailableMedia && (isHideNoMedia || isHideText)) {
     if (
       !state.currentFeedEndpoint.includes("/announcements") &&
       !state.currentFeedEndpoint.includes("/dms") &&
       !state.currentFeedEndpoint.includes("/fancards")
     ) {
-      return null;
+      if (isHideText) {
+        return null;
+      }
+      if (isHideNoMedia) {
+        const textContent = (cleanContent || post.content || post.substring || "")
+          .replace(/<[^>]*>/g, " ")
+          .replace(/&[a-z0-9#]+;/gi, " ")
+          .trim();
+        const hasText = textContent.length > 0;
+        if (!hasText) {
+          return null;
+        }
+      }
     }
   }
 

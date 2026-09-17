@@ -1,6 +1,6 @@
 import { PROXY_URL, state } from "./state.js";
 import { zipViewer, zipTitle, zipContent, zipIndicator, setZipNavVisible, render2DMatrixGallery } from "./zip.js";
-import { formatBytes, showMediaUnavailableWarning, renderArchiveProgress, renderMediaProgress } from "./utils.js";
+import { formatBytes, showMediaUnavailableWarning, renderArchiveProgress, renderMediaProgress, markMediaLoaded } from "./utils.js";
 import { attachMedia, syncCarouselClones, getCurrentGalleryPost, playbackObserver } from "./feed.js";
 import { createExternalAbortSignal, renderArchiveCardUI, escapeHtml, getMimeType, isImageOrVideo } from "./externalGalleries.js";
 import { attachCustomVideoPlayer } from "./player.js";
@@ -1346,18 +1346,11 @@ async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, si
       cachedBlobs.set(file.node.h, blobUrl);
     }
 
-    container.dataset.loaded = "true";
-    container.dataset.loading = "false";
-    if (overlay) overlay.style.display = "none";
-
     const matched = zipContent ? Array.from(zipContent.querySelectorAll(`[data-file-id="${file.node.h}"]`)) : [];
     if (!matched.includes(container)) matched.push(container);
 
     matched.forEach((c) => {
-      c.dataset.loaded = "true";
-      c.dataset.loading = "false";
-      const o = c.querySelector(".media-progress");
-      if (o) o.style.display = "none";
+      markMediaLoaded(c, file.name, totalSize ? formatBytes(totalSize) : "");
 
       if (isVideo) {
         if (c.dataset.isClone === "true") {
@@ -1417,10 +1410,7 @@ async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, si
             },
           }).then(() => {
             if (signal && signal.aborted) return;
-            c.dataset.loaded = "true";
-            c.dataset.loading = "false";
-            const prog = c.querySelector(".media-progress");
-            if (prog) prog.style.display = "none";
+            markMediaLoaded(c, file.name, totalSize ? formatBytes(totalSize) : "");
           }).catch((err) => {
             if (signal && signal.aborted) return;
             console.warn(`[Mega] Failed to load GIF ${file.name}:`, err);
@@ -1439,6 +1429,7 @@ async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, si
         image.src = blobUrl;
         image.style.display = "block";
         if (image.decode) image.decode().catch(() => {});
+        markMediaLoaded(c, file.name, totalSize ? formatBytes(totalSize) : "");
       }
     });
 

@@ -1,6 +1,6 @@
 import { PROXY_URL, state } from "./state.js";
 import { zipViewer, zipTitle, zipContent, zipIndicator, setZipNavVisible, closeZipGallery, render2DMatrixGallery, appendFolderGroupTo2DMatrix, updateZipScanProgress, updateZipIndicatorsAndHUD, getActiveMediaItem } from "./zip.js";
-import { formatBytes, showMediaUnavailableWarning, renderMediaProgress, renderArchiveProgress } from "./utils.js";
+import { formatBytes, showMediaUnavailableWarning, renderMediaProgress, renderArchiveProgress, markMediaLoaded } from "./utils.js";
 import { syncCarouselClones, playbackObserver, getCurrentGalleryPost } from "./feed.js";
 import { createExternalAbortSignal, renderArchiveCardUI, escapeHtml, isImageOrVideo } from "./externalGalleries.js";
 import { attachCustomVideoPlayer } from "./player.js";
@@ -1843,11 +1843,7 @@ function loadAndDisplayDropboxItem(container, file, signal) {
 
           const onReady = () => {
             allMatchingContainers.forEach((target) => {
-              target.dataset.loaded = "true";
-              delete target.dataset.loading;
-              delete target.dataset.failed;
-              const o = target.querySelector(".media-progress");
-              if (o) o.style.display = "none";
+              markMediaLoaded(target, file.filename, totalStr);
             });
             done();
           };
@@ -1872,11 +1868,7 @@ function loadAndDisplayDropboxItem(container, file, signal) {
             placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
             placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
             c.appendChild(placeholder);
-            c.dataset.loaded = "true";
-            delete c.dataset.loading;
-            delete c.dataset.failed;
-            const o = c.querySelector(".media-progress");
-            if (o) o.style.display = "none";
+            markMediaLoaded(c, file.filename, totalStr);
             return;
           }
 
@@ -1893,11 +1885,7 @@ function loadAndDisplayDropboxItem(container, file, signal) {
             if (!loadedOrFailed) {
               loadedOrFailed = true;
               allMatchingContainers.forEach((target) => {
-                target.dataset.loaded = "true";
-                delete target.dataset.loading;
-                delete target.dataset.failed;
-                const o = target.querySelector(".media-progress");
-                if (o) o.style.display = "none";
+                markMediaLoaded(target, file.filename, totalStr);
               });
               done();
             }
@@ -1967,13 +1955,9 @@ function loadAndDisplayDropboxItem(container, file, signal) {
 
             img.onload = () => {
               allMatchingContainers.forEach((target) => {
-                target.dataset.loaded = "true";
-                delete target.dataset.loading;
-                delete target.dataset.failed;
                 cleanupContainerMedia(target);
                 target.appendChild(img.cloneNode(true));
-                const o = target.querySelector(".media-progress");
-                if (o) o.style.display = "none";
+                markMediaLoaded(target, displayName, totalStr);
               });
               done();
             };

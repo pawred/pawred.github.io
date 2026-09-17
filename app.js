@@ -60,6 +60,9 @@ import { initEdgeVisualizer, toggleEdgeVisualizer } from './js/edgeVisualizer.js
 window.pawAnimationsDisabled = localStorage.getItem('paw_animations_disabled') === 'true';
 window.pawAutoDownloadZip = localStorage.getItem('paw_auto_download_zip') === 'true';
 window.pawHideCovers = localStorage.getItem('paw_hide_covers') === 'true';
+window.pawHideNoMedia = localStorage.getItem('paw_hideNoMedia') === 'true';
+window.pawHideText = localStorage.getItem('paw_hide_text') === 'true';
+window.pawHideWip = localStorage.getItem('paw_hide_wip') === 'true';
 const savedPreload = localStorage.getItem('paw_preload_count');
 window.pawPreloadCount = savedPreload !== null ? parseInt(savedPreload, 10) : 1;
 window.pawCustomGifPlayer = localStorage.getItem('paw_custom_gif_player') !== 'false';
@@ -106,9 +109,36 @@ function formatWorkerVersion(raw) {
 
 const settingHideNoMedia = document.getElementById('setting-hide-no-media');
 if (settingHideNoMedia) {
-  settingHideNoMedia.checked = localStorage.getItem('paw_hideNoMedia') === 'true';
+  settingHideNoMedia.checked = window.pawHideNoMedia;
   settingHideNoMedia.addEventListener('change', () => {
-    localStorage.setItem('paw_hideNoMedia', settingHideNoMedia.checked);
+    window.pawHideNoMedia = settingHideNoMedia.checked;
+    localStorage.setItem('paw_hideNoMedia', window.pawHideNoMedia);
+    if (feedView && feedView.classList.contains('active')) {
+      resetFeed();
+      fetchPosts();
+    }
+  });
+}
+
+const settingHideText = document.getElementById('setting-hide-text');
+if (settingHideText) {
+  settingHideText.checked = window.pawHideText;
+  settingHideText.addEventListener('change', (e) => {
+    window.pawHideText = e.target.checked;
+    localStorage.setItem('paw_hide_text', window.pawHideText);
+    if (feedView && feedView.classList.contains('active')) {
+      resetFeed();
+      fetchPosts();
+    }
+  });
+}
+
+const settingHideWip = document.getElementById('setting-hide-wip');
+if (settingHideWip) {
+  settingHideWip.checked = window.pawHideWip;
+  settingHideWip.addEventListener('change', (e) => {
+    window.pawHideWip = e.target.checked;
+    localStorage.setItem('paw_hide_wip', window.pawHideWip);
     if (feedView && feedView.classList.contains('active')) {
       resetFeed();
       fetchPosts();

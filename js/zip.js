@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { formatBytes, showMediaUnavailableWarning, renderArchiveProgress, renderMediaProgress, escapeHtml } from "./utils.js";
+import { formatBytes, showMediaUnavailableWarning, renderArchiveProgress, renderMediaProgress, markMediaLoaded, escapeHtml } from "./utils.js";
 import { showView, welcomeScreen, navBack, updateNavTabs, wrapCarousel, settingsMenu } from "./nav.js";
 import { handleCarouselScrollSettled, smoothScroll, navigateCarousel, getCarouselMetrics, getCurrentGalleryPost, playbackObserver } from "./feed.js";
 import { abortExternalGallery, getMimeType } from "./externalGalleries.js";
@@ -178,6 +178,7 @@ export function setZipNavVisible(visible, manual = false) {
     if (zipNav && !zipNav.classList.contains("visible")) {
       zipNav.classList.add("visible");
     }
+    document.body.classList.add("nav-visible");
   } else {
     closeZipNavDropdown();
     if (zipNav) {
@@ -186,6 +187,7 @@ export function setZipNavVisible(visible, manual = false) {
       }
       zipNav.classList.remove("visible");
     }
+    document.body.classList.remove("nav-visible");
   }
 }
 
@@ -1041,6 +1043,9 @@ function unloadSlide(slide) {
 
   delete slide.dataset.loaded;
   delete slide.dataset.loading;
+  delete slide.dataset.failed;
+  slide.classList.remove("media-loaded");
+  slide.classList.remove("media-has-preview");
 
   if (typeof cancelDropboxQueuedTask === "function") {
     cancelDropboxQueuedTask(slide);
@@ -1048,6 +1053,8 @@ function unloadSlide(slide) {
 
   const progress = slide.querySelector(".media-progress");
   if (progress) {
+    progress.classList.remove("media-loaded");
+    progress.classList.add("media-loading");
     progress.style.display = "flex";
     const filename = slide.dataset.filename || "";
     const size = parseInt(slide.dataset.size || "0", 10);
@@ -1625,8 +1632,7 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                   container.appendChild(media.cloneNode(true));
                 }
               }
-              const p = container.querySelector(".media-progress");
-              if (p) p.style.display = "none";
+              markMediaLoaded(container, f.name, f.size ? formatBytes(f.size) : "");
               return;
             }
 
@@ -1695,10 +1701,7 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
 
                   const onReady = () => {
                     allMatchingContainers.forEach((t) => {
-                      t.dataset.loaded = "true";
-                      delete t.dataset.loading;
-                      const p = t.querySelector(".media-progress");
-                      if (p) p.style.display = "none";
+                      markMediaLoaded(t, f.name, f.size ? formatBytes(f.size) : "");
                     });
                     const active = getActiveMediaItem();
                     if (active && (active.item === target || active.item?.dataset?.fileIdx === target.dataset.fileIdx)) {
@@ -1749,10 +1752,7 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
 
                   const onReady = () => {
                     allMatchingContainers.forEach((t) => {
-                      t.dataset.loaded = "true";
-                      delete t.dataset.loading;
-                      const p = t.querySelector(".media-progress");
-                      if (p) p.style.display = "none";
+                      markMediaLoaded(t, f.name, f.size ? formatBytes(f.size) : "");
                     });
                   };
 
@@ -1805,10 +1805,7 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                   placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
                   placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
                   clone.appendChild(placeholder);
-                  clone.dataset.loaded = "true";
-                  delete clone.dataset.loading;
-                  const p = clone.querySelector(".media-progress");
-                  if (p) p.style.display = "none";
+                  markMediaLoaded(clone, f.name, f.size ? formatBytes(f.size) : "");
                 });
 
                 if (typeof targetNonClone._cleanupGif === "function") {
@@ -1834,9 +1831,7 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                 });
 
                 if (sig && sig.aborted) return;
-                targetNonClone.dataset.loaded = "true";
-                delete targetNonClone.dataset.loading;
-                if (progressOverlay) progressOverlay.style.display = "none";
+                markMediaLoaded(targetNonClone, f.name, f.size ? formatBytes(f.size) : "");
 
                 const active = getActiveMediaItem();
                 if (active && (active.item === targetNonClone || active.item?.dataset?.fileIdx === targetNonClone.dataset.fileIdx)) {
@@ -1851,16 +1846,13 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
 
                 img.onload = () => {
                   allMatchingContainers.forEach((target) => {
-                    target.dataset.loaded = "true";
-                    delete target.dataset.loading;
                     if (typeof target._cleanupGif === "function") {
                       try { target._cleanupGif(); } catch (_) {}
                       target._cleanupGif = null;
                     }
                     target.querySelectorAll("img, video, audio, canvas, .video-player-wrapper").forEach((el) => el.remove());
                     target.appendChild(img.cloneNode(true));
-                    const p = target.querySelector(".media-progress");
-                    if (p) p.style.display = "none";
+                    markMediaLoaded(target, f.name, f.size ? formatBytes(f.size) : "");
                   });
                   const active = getActiveMediaItem();
                   if (active && (active.item === container || active.item?.dataset?.fileIdx === container.dataset.fileIdx)) {
