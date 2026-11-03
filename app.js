@@ -69,6 +69,7 @@ import {
   fetchE621UserProfile
 } from './js/e621Auth.js';
 import { getGelbooruAuth, saveGelbooruAuth } from './js/gelbooruAuth.js';
+import { attachTagAutocomplete } from './js/autocomplete.js';
 
 window.pawAnimationsDisabled = localStorage.getItem('paw_animations_disabled') === 'true';
 window.pawAutoDownloadZip = localStorage.getItem('paw_auto_download_zip') === 'true';
@@ -422,6 +423,7 @@ if (navBlacklist && blacklistMenu) {
     if (settingsMenu) settingsMenu.classList.remove('active');
     if (blacklistMenuTags) blacklistMenuTags.value = getE621Blacklist();
     if (blacklistMenuEnable) blacklistMenuEnable.checked = isE621BlacklistEnabled();
+    if (btnBlacklistMenuSync) btnBlacklistMenuSync.style.display = state.currentSite === 'e621' ? '' : 'none';
     blacklistMenu.classList.toggle('active');
     updateNavVisibility();
   });
@@ -604,36 +606,62 @@ if (btnCreators) {
 const btnE621Favorites = document.getElementById('btn-e621-favorites');
 if (btnE621Favorites) {
   btnE621Favorites.addEventListener('click', () => {
-    const auth = getE621Auth();
-    if (!auth.username) {
-      alert("Please enter your e621 Username below to access your favorites.");
-      if (settingE621Username) {
-        settingE621Username.focus();
-        settingE621Username.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (state.currentSite === 'e621') {
+      const auth = getE621Auth();
+      if (!auth || !auth.username) {
+        alert("Please enter your e621 Username below to access your favorites.");
+        if (settingE621Username) {
+          settingE621Username.focus();
+          settingE621Username.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        return;
       }
-      return;
+      resetFeed();
+      const favTag = `fav:${auth.username}`;
+      if (inputE621Tag) inputE621Tag.value = favTag;
+      state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(favTag)}`;
+      state.currentFeedCreatorName = null;
+      updateNavTabs(null);
+      if (navBack) navBack.classList.remove('hidden');
+      showView(feedView, true);
+      fetchPosts();
+    } else if (state.currentSite === 'gelbooru') {
+      const gelAuth = getGelbooruAuth();
+      if (!gelAuth || !gelAuth.userId) {
+        alert("Please enter your Gelbooru User ID in the account panel below to access your favorites.");
+        if (settingGelbooruUserId) {
+          settingGelbooruUserId.focus();
+          settingGelbooruUserId.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        return;
+      }
+      resetFeed();
+      const favTag = `fav:${gelAuth.userId}`;
+      if (inputE621Tag) inputE621Tag.value = favTag;
+      state.currentFeedEndpoint = `${PROXY_URL}/gelbooru/api/v1/posts?tags=${encodeURIComponent(favTag)}`;
+      state.currentFeedCreatorName = null;
+      updateNavTabs(null);
+      if (navBack) navBack.classList.remove('hidden');
+      showView(feedView, true);
+      fetchPosts();
     }
-    resetFeed();
-    const favTag = `fav:${auth.username}`;
-    if (inputE621Tag) inputE621Tag.value = favTag;
-    state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(favTag)}`;
-    state.currentFeedCreatorName = null;
-    updateNavTabs(null);
-    if (navBack) navBack.classList.remove('hidden');
-    showView(feedView, true);
-    fetchPosts();
   });
 }
 
 const btnE621Search = document.getElementById('btn-e621-search');
 const inputE621Tag = document.getElementById('e621-tag-input');
+if (inputE621Tag) {
+  attachTagAutocomplete(inputE621Tag);
+}
 
-function triggerBooruSearch() {
-  const tagVal = inputE621Tag ? inputE621Tag.value.trim() : '';
-  if (!tagVal) return;
+function triggerUniversalSearch() {
+  const queryVal = inputE621Tag ? inputE621Tag.value.trim() : '';
+  if (!queryVal) return;
   resetFeed();
   const currentSite = state.currentSite;
-  state.currentFeedEndpoint = `${PROXY_URL}/${currentSite}/api/v1/posts?tags=${encodeURIComponent(tagVal)}`;
+  const isBooru = currentSite === 'e621' || currentSite === 'gelbooru';
+  const param = isBooru ? 'tags' : 'q';
+  state.currentFeedEndpoint = `${PROXY_URL}/${currentSite}/api/v1/posts?${param}=${encodeURIComponent(queryVal)}`;
   state.currentFeedCreatorName = null;
   updateNavTabs(null);
   if (navBack) navBack.classList.remove('hidden');
@@ -642,13 +670,13 @@ function triggerBooruSearch() {
 }
 
 if (btnE621Search) {
-  btnE621Search.addEventListener('click', triggerBooruSearch);
+  btnE621Search.addEventListener('click', triggerUniversalSearch);
 }
 if (inputE621Tag) {
   inputE621Tag.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      triggerBooruSearch();
+      triggerUniversalSearch();
     }
   });
 }

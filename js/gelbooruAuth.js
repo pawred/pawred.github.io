@@ -10,6 +10,11 @@ export function getGelbooruAuth() {
   return { userId, apiKey, hasAuth: Boolean(userId && apiKey) };
 }
 
+export function hasGelbooruAuth() {
+  const { userId } = getGelbooruAuth();
+  return Boolean(userId);
+}
+
 export function saveGelbooruAuth(userId, apiKey) {
   const cleanUser = (userId || "").trim();
   const cleanKey = (apiKey || "").trim();

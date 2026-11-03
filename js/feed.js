@@ -2178,7 +2178,7 @@ export function createPostCard(rawPost) {
     }
   }
 
-  if (state.currentSite === "e621" && isE621BlacklistEnabled()) {
+  if ((state.currentSite === "e621" || state.currentSite === "gelbooru") && isE621BlacklistEnabled()) {
     const rawBlacklist = getE621Blacklist();
     const rules = parseBlacklist(rawBlacklist);
     if (rules.length > 0 && isPostBlacklisted(post, rules)) {
@@ -2813,7 +2813,7 @@ export function transformE621PostClient(p) {
   const metaTags = (p.tags && Array.isArray(p.tags.meta)) ? p.tags.meta : [];
   const invalidTags = (p.tags && Array.isArray(p.tags.invalid)) ? p.tags.invalid : [];
 
-  const artistName = artistTags.length > 0 ? artistTags[0] : (p.uploader_name || "e621");
+  const artistName = artistTags.length > 0 ? artistTags[0] : (p.uploader_name || "Unknown");
 
   const fileObj = p.file || {};
   const ext = (fileObj.ext || "jpg").toLowerCase();
@@ -3025,7 +3025,7 @@ export async function fetchPosts() {
       rawBatchCount = posts.length;
     } else {
       rawBatchCount = posts.length;
-      if (state.currentSite === "e621" && isE621BlacklistEnabled()) {
+      if ((state.currentSite === "e621" || state.currentSite === "gelbooru") && isE621BlacklistEnabled()) {
         const rules = parseBlacklist(getE621Blacklist());
         if (rules.length > 0) {
           posts = posts.filter((p) => !isPostBlacklisted(p, rules));
@@ -3079,7 +3079,7 @@ export async function fetchPosts() {
 }
 
 export function applyBlacklistToCurrentFeed() {
-  if (state.currentSite !== "e621") return;
+  if (state.currentSite !== "e621" && state.currentSite !== "gelbooru") return;
   const feed = document.getElementById("feed");
   if (!feed) return;
   const cards = feed.querySelectorAll(".post-card");

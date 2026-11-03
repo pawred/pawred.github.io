@@ -3,6 +3,8 @@ import { buildCreatorCard } from "./creators.js";
 import { resetFeed, fetchPosts, updateAllE621TagChips } from "./feed.js";
 import { escapeHtml } from "./utils.js";
 import { getE621Auth } from "./e621Auth.js";
+import { getGelbooruAuth } from "./gelbooruAuth.js";
+import { attachTagAutocomplete } from "./autocomplete.js";
 
 export const welcomeScreen = document.getElementById("welcome-screen");
 export const creatorsView = document.getElementById("creators-view");
@@ -182,30 +184,51 @@ export function updateSiteSpecificUI() {
   const hasAccount = Boolean(auth && auth.username);
 
   const isBooru = state.currentSite === "e621" || state.currentSite === "gelbooru";
+  const gelAuth = getGelbooruAuth();
+  const hasGelAccount = Boolean(gelAuth && gelAuth.userId);
+  const showFavorites = (state.currentSite === "e621" && hasAccount) || (state.currentSite === "gelbooru" && hasGelAccount);
 
-  if (isBooru) {
-    if (navBlacklist) navBlacklist.classList.toggle("hidden", state.currentSite !== "e621");
-    if (e621SearchContainer) e621SearchContainer.style.display = "flex";
-    if (inputE621Tag) {
-      inputE621Tag.placeholder = state.currentSite === "gelbooru"
-        ? "Search tags (e.g. 1girl, rating:general, sort:random)..."
-        : "Search tags (e.g. canine, rating:s, order:rank)...";
-    }
-    if (btnCreators) btnCreators.textContent = state.currentSite === "gelbooru" ? "Random Posts" : "Popular Posts";
-    if (btnE621Favorites) btnE621Favorites.style.display = (state.currentSite === "e621" && hasAccount) ? "" : "none";
-    if (e621AccountPanel) e621AccountPanel.style.display = state.currentSite === "e621" ? "block" : "none";
-    if (gelbooruAccountPanel) gelbooruAccountPanel.style.display = state.currentSite === "gelbooru" ? "block" : "none";
-  } else {
-    if (navBlacklist) navBlacklist.classList.add("hidden");
-    if (blacklistMenu && blacklistMenu.classList.contains("active")) {
-      blacklistMenu.classList.remove("active");
-    }
-    if (e621SearchContainer) e621SearchContainer.style.display = "none";
-    if (btnCreators) btnCreators.textContent = "Creator List";
-    if (btnE621Favorites) btnE621Favorites.style.display = "none";
-    if (e621AccountPanel) e621AccountPanel.style.display = "none";
-    if (gelbooruAccountPanel) gelbooruAccountPanel.style.display = "none";
+  // Blacklist available for all booru sites (e621 and Gelbooru)
+  if (navBlacklist) navBlacklist.classList.toggle("hidden", !isBooru);
+  if (!isBooru && blacklistMenu && blacklistMenu.classList.contains("active")) {
+    blacklistMenu.classList.remove("active");
   }
+
+  // Universal search available on all sites
+  if (e621SearchContainer) e621SearchContainer.style.display = "flex";
+  if (inputE621Tag) {
+    if (state.currentSite === "gelbooru") {
+      inputE621Tag.placeholder = "Search tags (e.g. 1girl, rating:general, sort:random)...";
+    } else if (state.currentSite === "e621") {
+      inputE621Tag.placeholder = "Search tags (e.g. canine, rating:s, order:rank)...";
+    } else if (state.currentSite === "cum") {
+      inputE621Tag.placeholder = "Search posts by creator or caption keyword...";
+    } else if (state.currentSite === "kemono") {
+      inputE621Tag.placeholder = "Search posts by keyword (e.g. comic, 3D, cosplay)...";
+    } else {
+      inputE621Tag.placeholder = "Search posts by keyword...";
+    }
+  }
+
+  // Action buttons
+  if (btnCreators) {
+    if (state.currentSite === "gelbooru") {
+      btnCreators.textContent = "Random Posts";
+    } else if (state.currentSite === "e621") {
+      btnCreators.textContent = "Popular Posts";
+    } else {
+      btnCreators.textContent = "Creator List";
+    }
+  }
+
+  if (btnE621Favorites) {
+    btnE621Favorites.style.display = showFavorites ? "" : "none";
+    btnE621Favorites.textContent = "My Favorites";
+  }
+
+  // Account panels
+  if (e621AccountPanel) e621AccountPanel.style.display = state.currentSite === "e621" ? "block" : "none";
+  if (gelbooruAccountPanel) gelbooruAccountPanel.style.display = state.currentSite === "gelbooru" ? "block" : "none";
 
   updateSourceSwitcher(state.currentSite);
 }
@@ -280,6 +303,7 @@ export function updateNavTabs(creator) {
     input.value = activeTag;
     input.autocomplete = "off";
     input.spellcheck = false;
+    attachTagAutocomplete(input);
 
     const clearBtn = document.createElement("button");
     clearBtn.type = "button";
@@ -1032,9 +1056,10 @@ export function showView(viewElement, showNav = true) {
     if (nav) nav.classList.add("auto-hide");
     state.navManualVisible = false;
     if (navInfo) navInfo.classList.remove("hidden");
-    if (navBlacklist) navBlacklist.classList.toggle("hidden", state.currentSite !== "e621");
+    const isBooru = state.currentSite === "e621" || state.currentSite === "gelbooru";
+    if (navBlacklist) navBlacklist.classList.toggle("hidden", !isBooru);
     if (navTabs) {
-      if (state.currentFeedCreatorName || state.currentSite === "e621" || state.currentSite === "gelbooru") {
+      if (state.currentFeedCreatorName || isBooru) {
         navTabs.classList.remove("hidden");
       } else {
         navTabs.classList.add("hidden");
@@ -1049,6 +1074,7 @@ export function showView(viewElement, showNav = true) {
     }
     if (navTabs) navTabs.classList.add("hidden");
     if (navInfo) navInfo.classList.add("hidden");
-    if (navBlacklist) navBlacklist.classList.toggle("hidden", state.currentSite !== "e621");
+    const isBooru = state.currentSite === "e621" || state.currentSite === "gelbooru";
+    if (navBlacklist) navBlacklist.classList.toggle("hidden", !isBooru);
   }
 }
