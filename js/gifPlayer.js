@@ -997,11 +997,85 @@ export async function loadGifPlayer({
       for (const targetUrl of candidateUrls) {
         try {
           const res = await fetch(targetUrl, { signal });
-          if (res.ok) {
+          if (!res.ok) {
+            lastErr = new Error(`HTTP ${res.status}`);
+            continue;
+          }
+
+          const contentType = (res.headers.get("content-type") || "").toLowerCase();
+          if (contentType.includes("application/zip") || (contentType.includes("text/html") && !targetUrl.includes("data:"))) {
+            lastErr = new Error(`Invalid content-type: ${contentType}`);
+            continue;
+          }
+
+          const contentLength = parseInt(res.headers.get("content-length") || "0", 10);
+          const totalSize = contentLength > 0 ? contentLength : knownSize;
+          if (totalSize > 80 * 1024 * 1024) {
+            throw new Error(`GIF exceeds 80MB size limit (${formatBytes(totalSize)})`);
+          }
+
+          const reader = res.body?.getReader();
+          if (!reader) {
+            const ab = await res.arrayBuffer();
+            if (signal.aborted) return;
+            fullBuffer = new Uint8Array(ab);
             response = res;
             break;
           } else {
-            lastErr = new Error(`HTTP ${res.status}`);
+            const chunks = [];
+            let downloadedBytes = 0;
+            let lastUiUpdate = 0;
+            let streamFailed = false;
+
+            while (true) {
+              if (signal.aborted) return;
+              let readResult;
+              try {
+                readResult = await reader.read();
+              } catch (rErr) {
+                streamFailed = true;
+                lastErr = rErr;
+                break;
+              }
+              const { done, value } = readResult;
+              if (signal.aborted) return;
+              if (done) break;
+
+              chunks.push(value);
+              downloadedBytes += value.length;
+              if (downloadedBytes > 80 * 1024 * 1024) {
+                try { reader.cancel(); } catch (_) {}
+                throw new Error("GIF exceeded 80MB download limit");
+              }
+
+              const now = Date.now();
+              if (now - lastUiUpdate > 100) {
+                lastUiUpdate = now;
+                if (totalSize > 0) {
+                  const percent = Math.min(100, Math.round((downloadedBytes / totalSize) * 100));
+                  const loadedStr = formatBytes(downloadedBytes);
+                  const totalStr = formatBytes(totalSize);
+                  renderMediaProgress(progressOverlay, "Loading...", percent, filename, loadedStr, totalStr);
+                } else {
+                  renderMediaProgress(progressOverlay, "Loading...", null, filename, formatBytes(downloadedBytes), "");
+                }
+              }
+            }
+
+            if (streamFailed) {
+              continue;
+            }
+
+            if (signal.aborted) return;
+
+            fullBuffer = new Uint8Array(downloadedBytes);
+            let offset = 0;
+            for (const chunk of chunks) {
+              fullBuffer.set(chunk, offset);
+              offset += chunk.length;
+            }
+            response = res;
+            break;
           }
         } catch (err) {
           if (signal.aborted) return;
@@ -1009,70 +1083,12 @@ export async function loadGifPlayer({
         }
       }
 
-      if (!response || !response.ok) {
+      if (!fullBuffer || !response) {
         throw lastErr || new Error(`HTTP ${response ? response.status : "Failed to fetch GIF"}`);
       }
 
-      const contentType = (response.headers.get("content-type") || "").toLowerCase();
-      if (contentType.includes("application/zip") || (contentType.includes("text/html") && !url.includes("data:"))) {
-        throw new Error(`Invalid GIF response content-type (${contentType}). Cannot decode non-image as GIF.`);
-      }
-
-      const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
-      const totalSize = contentLength > 0 ? contentLength : knownSize;
-      if (totalSize > 80 * 1024 * 1024) {
-        throw new Error(`GIF exceeds 80MB size limit (${formatBytes(totalSize)})`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        const ab = await response.arrayBuffer();
-        if (signal.aborted) return;
-        fullBuffer = new Uint8Array(ab);
-      } else {
-        const chunks = [];
-        let downloadedBytes = 0;
-        let lastUiUpdate = 0;
-
-        while (true) {
-          if (signal.aborted) return;
-          const { done, value } = await reader.read();
-          if (signal.aborted) return;
-          if (done) break;
-
-          chunks.push(value);
-          downloadedBytes += value.length;
-          if (downloadedBytes > 80 * 1024 * 1024) {
-            try { reader.cancel(); } catch (_) {}
-            throw new Error("GIF exceeded 80MB download limit");
-          }
-
-          const now = Date.now();
-          if (now - lastUiUpdate > 100) {
-            lastUiUpdate = now;
-            if (totalSize > 0) {
-              const percent = Math.min(100, Math.round((downloadedBytes / totalSize) * 100));
-              const loadedStr = formatBytes(downloadedBytes);
-              const totalStr = formatBytes(totalSize);
-              renderMediaProgress(progressOverlay, "Loading...", percent, filename, loadedStr, totalStr);
-            } else {
-              renderMediaProgress(progressOverlay, "Loading...", null, filename, formatBytes(downloadedBytes), "");
-            }
-          }
-        }
-
-        if (signal.aborted) return;
-
-        fullBuffer = new Uint8Array(downloadedBytes);
-        let offset = 0;
-        for (const chunk of chunks) {
-          fullBuffer.set(chunk, offset);
-          offset += chunk.length;
-        }
-      }
-
       const finalSizeStr = formatBytes(fullBuffer.byteLength);
-      renderMediaProgress(progressOverlay, "Decoding...", 100, filename, finalSizeStr, totalSize > 0 ? formatBytes(totalSize) : finalSizeStr);
+      renderMediaProgress(progressOverlay, "Decoding...", 100, filename, finalSizeStr, finalSizeStr);
     }
 
     const gifReader = new GifReader(fullBuffer);

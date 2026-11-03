@@ -142,6 +142,7 @@ export function getServiceColor(service) {
   if (s === "boosty") return "linear-gradient(to bottom, #EF7829, #EC5B2B)";
   if (s === "fantia") return "linear-gradient(to right, #8CC13F, #E1097F, #8D2680, #00A098, #383877, #F05B26)";
   if (s === "e621") return "#00549e";
+  if (s === "gelbooru") return "#006ffa";
   return "#222";
 }
 
@@ -149,6 +150,7 @@ export function getSiteDomain() {
   if (state.currentSite === "kemono") return "kemono.cr";
   if (state.currentSite === "cum") return "cum.st";
   if (state.currentSite === "e621") return "e621.net";
+  if (state.currentSite === "gelbooru") return "gelbooru.com";
   return "pawchive.pw";
 }
 
@@ -158,6 +160,9 @@ export function getServiceCreatorUrl(service, userId) {
   const id = encodeURIComponent(userId || "");
   if (state.currentSite === "e621") {
     return `https://${domain}/posts?tags=${id}`;
+  }
+  if (state.currentSite === "gelbooru") {
+    return `https://${domain}/index.php?page=post&s=list&tags=${id}`;
   }
   if (state.currentSite === "cum") {
     return `https://${domain}/creators/${s}/${id}`;
@@ -173,6 +178,9 @@ export function getServicePostUrl(service, userId, postId) {
 
   if (state.currentSite === "e621") {
     return `https://${domain}/posts/${pid}`;
+  }
+  if (state.currentSite === "gelbooru") {
+    return `https://${domain}/index.php?page=post&s=view&id=${pid}`;
   }
 
   if (state.currentFeedEndpoint && state.currentFeedEndpoint.includes("fancards")) {
@@ -221,6 +229,15 @@ export function getMediaUrl(path) {
   }
   if (path.startsWith("http://") || path.startsWith("https://")) {
     return `${PROXY_URL}/proxy?url=${encodeURIComponent(path)}`;
+  }
+  if (state.currentSite === "gelbooru") {
+    return `${PROXY_URL}/gelbooru/file/${path.replace(/^\/+/, '')}`;
+  }
+  if (state.currentSite === "cum") {
+    if (path.startsWith("/media/") || path.startsWith("media/")) {
+      const sub = path.replace(/^\/?(?:data\/)?(?:media\/)?/, "");
+      return `https://cdn.cum.st/media/${sub}`;
+    }
   }
   const clean = path.startsWith("/") ? path : `/${path}`;
   return `${PROXY_URL}/${state.currentSite}/file/data${clean}`;

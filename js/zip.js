@@ -1085,9 +1085,12 @@ export function unloadOffscreenSlides() {
     }
 
     const slides = Array.from(row.querySelectorAll(".media-item:not([data-is-clone='true'])"));
+    const totalFiles = slides.length;
     slides.forEach((slide) => {
       const idx = parseInt(slide.dataset.fileIdx || "0", 10) || 0;
-      const fileDist = Math.abs(idx - (ri === activeRowIdx ? activeFileIdx : 0));
+      const targetBase = ri === activeRowIdx ? activeFileIdx : 0;
+      const rawDiff = Math.abs(idx - targetBase);
+      const fileDist = totalFiles > 1 ? Math.min(rawDiff, totalFiles - rawDiff) : rawDiff;
       if (fileDist > KEEP_RADIUS) {
         if (slide.dataset.loaded === "true" || slide.dataset.loading === "true") {
           unloadSlide(slide);
@@ -1117,13 +1120,16 @@ export function preloadAroundActive() {
     const base = parseInt(active.item.dataset.fileIdx || "0", 10) || 0;
     // Load the active slide first!
     triggerSlideLoad(slides[base], signal);
-    // Then load ahead
-    for (let k = base + 1; k <= Math.min(slides.length - 1, base + ahead); k++) {
-      triggerSlideLoad(slides[k], signal);
-    }
-    // Then load previous slide
-    if (base > 0) {
-      triggerSlideLoad(slides[base - 1], signal);
+    // In an infinite carousel, preload both ahead and behind with wrapping!
+    if (slides.length > 1) {
+      for (let offset = 1; offset <= ahead; offset++) {
+        const nextIdx = (base + offset) % slides.length;
+        triggerSlideLoad(slides[nextIdx], signal);
+      }
+      for (let offset = 1; offset <= 2; offset++) {
+        const prevIdx = (base - offset + slides.length) % slides.length;
+        triggerSlideLoad(slides[prevIdx], signal);
+      }
     }
   }
 
@@ -1192,10 +1198,43 @@ export function createFolderRowElement(group, folderIdx, options = {}) {
     delete cloneLast.dataset.loading;
     delete cloneLast.dataset.loaded;
 
-    const p1 = cloneFirst.querySelector(".media-progress");
-    if (p1) p1.style.display = "flex";
-    const p2 = cloneLast.querySelector(".media-progress");
-    if (p2) p2.style.display = "flex";
+    if (firstChild.dataset.loaded === "true") {
+      const media = firstChild.querySelector("img, video, audio, canvas");
+      if (media) {
+        if (media.tagName === "IMG") {
+          cloneFirst.appendChild(media.cloneNode(true));
+        } else {
+          const placeholder = document.createElement("div");
+          placeholder.className = "post-media";
+          placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+          placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+          cloneFirst.appendChild(placeholder);
+        }
+        markMediaLoaded(cloneFirst, firstChild.dataset.filename || "");
+      }
+    } else {
+      const p1 = cloneFirst.querySelector(".media-progress");
+      if (p1) p1.style.display = "flex";
+    }
+
+    if (lastChild.dataset.loaded === "true") {
+      const media = lastChild.querySelector("img, video, audio, canvas");
+      if (media) {
+        if (media.tagName === "IMG") {
+          cloneLast.appendChild(media.cloneNode(true));
+        } else {
+          const placeholder = document.createElement("div");
+          placeholder.className = "post-media";
+          placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
+          placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
+          cloneLast.appendChild(placeholder);
+        }
+        markMediaLoaded(cloneLast, lastChild.dataset.filename || "");
+      }
+    } else {
+      const p2 = cloneLast.querySelector(".media-progress");
+      if (p2) p2.style.display = "flex";
+    }
 
     folderRow.insertBefore(cloneLast, firstChild);
     folderRow.appendChild(cloneFirst);
@@ -1678,6 +1717,7 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                     placeholder.style.cssText = "display: flex; align-items: center; justify-content: center; background: #000; width: 100%; height: 100%;";
                     placeholder.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="rgba(255,255,255,0.35)"><path d="M8 5v14l11-7z"/></svg>';
                     target.appendChild(placeholder);
+                    markMediaLoaded(target, f.name, f.size ? formatBytes(f.size) : "");
                     return;
                   }
 

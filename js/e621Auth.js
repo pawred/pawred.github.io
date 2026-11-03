@@ -166,19 +166,7 @@ export async function fetchE621UserProfile(username, apiKey) {
     headers["Authorization"] = "Basic " + btoa(`${username}:${apiKey}`);
   }
 
-  // 1. Direct fetch to e621
-  const directUrl = `https://e621.net/users.json?search[name]=${encodeURIComponent(username)}`;
-  try {
-    const res = await fetch(directUrl, { headers });
-    if (res.ok) {
-      const users = await res.json();
-      if (Array.isArray(users) && users.length > 0) {
-        return users[0];
-      }
-    }
-  } catch (_) {}
-
-  // 2. Fallback via proxy worker
+  // Fetch user profile through paw-worker proxy
   const proxyUrl = `${PROXY_URL}/e621/users.json?search[name]=${encodeURIComponent(username)}`;
   const proxyHeaders = { ...headers };
   if (apiKey) {

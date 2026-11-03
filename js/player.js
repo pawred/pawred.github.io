@@ -510,6 +510,10 @@ export function attachCustomVideoPlayer(video, container) {
   }, { passive: true });
 
   overlay.addEventListener("click", (e) => {
+    if (container.querySelector(".media-progress.media-error, .media-progress:has(.retry-media-btn)")) {
+      return;
+    }
+
     const expandedInfo = document.querySelector(".post-info.expanded");
     if (expandedInfo) {
       if (e.target.closest(".post-info")) {

@@ -2,6 +2,7 @@ import { PROXY_URL, state } from "./state.js";
 import { getServiceColor, startProgress, stopProgress, escapeHtml, fetchWithRetry } from "./utils.js";
 import { updateNavTabs, showView, navBack, feedView } from "./nav.js";
 import { resetFeed, fetchPosts } from "./feed.js";
+import { getE621Headers } from "./e621Auth.js";
 
 export const creatorsList = document.getElementById("creators-list");
 export const creatorsLoading = document.getElementById("creators-loading");
@@ -293,21 +294,22 @@ export async function loadCreators() {
   try {
     let res;
     if (currentSiteAtCall === "e621") {
+      const query = searchInput ? searchInput.value.trim() : "";
+      let directUrl = "https://e621.net/tags.json?search[category]=1&search[order]=count&limit=100";
+      if (query) {
+        directUrl += `&search[name_matches]=*${encodeURIComponent(query.toLowerCase())}*`;
+      }
       try {
-        const query = searchInput ? searchInput.value.trim() : "";
-        let directUrl = "https://e621.net/tags.json?search[category]=1&search[order]=count&limit=100";
-        if (query) {
-          directUrl += `&search[name_matches]=*${encodeURIComponent(query.toLowerCase())}*`;
-        }
-        res = await fetch(directUrl);
+        res = await fetch(directUrl, { headers: getE621Headers() });
       } catch (_) {}
-
       if (!res || !res.ok) {
-        try {
-          res = await fetchWithRetry(`${PROXY_URL}/${currentSiteAtCall}/api/v1/creators`);
-        } catch (fetchErr) {
-          res = null;
+        let ep = `${PROXY_URL}/${currentSiteAtCall}/api/v1/creators`;
+        if (query) {
+          ep += `?q=${encodeURIComponent(query)}`;
         }
+        try {
+          res = await fetchWithRetry(ep, { headers: getE621Headers() });
+        } catch (_) {}
       }
     } else {
       res = await fetchWithRetry(`${PROXY_URL}/${currentSiteAtCall}/api/v1/creators`);
@@ -482,7 +484,7 @@ export function buildCreatorCard(creator, checkedServices = []) {
   img.className = "creator-image";
 
   function setAvatar(p) {
-    if (state.currentSite === "e621") {
+    if (state.currentSite === "e621" || state.currentSite === "gelbooru") {
       img.style.display = "none";
       img.src = "";
     } else if (state.currentSite === "cum") {

@@ -16,6 +16,7 @@ import {
   updateNavVisibility,
   updateSiteSpecificUI,
   updateNavTabs,
+  updateSourceSwitcher,
   showView
 } from './js/nav.js';
 import {
@@ -67,6 +68,7 @@ import {
   setE621BlacklistEnabled,
   fetchE621UserProfile
 } from './js/e621Auth.js';
+import { getGelbooruAuth, saveGelbooruAuth } from './js/gelbooruAuth.js';
 
 window.pawAnimationsDisabled = localStorage.getItem('paw_animations_disabled') === 'true';
 window.pawAutoDownloadZip = localStorage.getItem('paw_auto_download_zip') === 'true';
@@ -238,6 +240,16 @@ const initialE621Auth = getE621Auth();
 if (settingE621Username) settingE621Username.value = initialE621Auth.username || '';
 if (settingE621ApiKey) settingE621ApiKey.value = initialE621Auth.apiKey || '';
 
+// Gelbooru Account (Home page)
+const settingGelbooruUserId = document.getElementById('setting-gelbooru-user-id');
+const settingGelbooruApiKey = document.getElementById('setting-gelbooru-api-key');
+const btnGelbooruSaveAuth = document.getElementById('btn-gelbooru-save-auth');
+const gelbooruAuthStatus = document.getElementById('gelbooru-auth-status');
+
+const initialGelbooruAuth = getGelbooruAuth();
+if (settingGelbooruUserId) settingGelbooruUserId.value = initialGelbooruAuth.userId || '';
+if (settingGelbooruApiKey) settingGelbooruApiKey.value = initialGelbooruAuth.apiKey || '';
+
 // Blacklist Menu (Drawer)
 const blacklistMenuEnable = document.getElementById('blacklist-menu-enable');
 const blacklistMenuTags = document.getElementById('blacklist-menu-tags');
@@ -256,7 +268,6 @@ if (blacklistMenuTags) blacklistMenuTags.value = initialBlacklistText;
 if (blacklistMenuEnable) {
   blacklistMenuEnable.addEventListener('change', (e) => {
     setE621BlacklistEnabled(e.target.checked);
-    if (settingE621EnableBlacklist) settingE621EnableBlacklist.checked = e.target.checked;
     applyBlacklistToCurrentFeed();
   });
 }
@@ -264,7 +275,6 @@ if (blacklistMenuEnable) {
 if (blacklistMenuTags) {
   blacklistMenuTags.addEventListener('input', (e) => {
     saveE621Blacklist(e.target.value);
-    if (settingE621Blacklist) settingE621Blacklist.value = e.target.value;
   });
 }
 
@@ -272,7 +282,6 @@ if (btnBlacklistMenuSave) {
   btnBlacklistMenuSave.addEventListener('click', () => {
     const tags = blacklistMenuTags ? blacklistMenuTags.value : '';
     saveE621Blacklist(tags);
-    if (settingE621Blacklist) settingE621Blacklist.value = tags;
     applyBlacklistToCurrentFeed();
     if (blacklistMenuStatus) {
       blacklistMenuStatus.textContent = 'Blacklist saved!';
@@ -290,7 +299,6 @@ if (btnBlacklistMenuClear) {
   btnBlacklistMenuClear.addEventListener('click', () => {
     if (blacklistMenuTags) blacklistMenuTags.value = '';
     saveE621Blacklist('');
-    if (settingE621Blacklist) settingE621Blacklist.value = '';
     applyBlacklistToCurrentFeed();
     if (blacklistMenuStatus) {
       blacklistMenuStatus.textContent = 'Blacklist cleared.';
@@ -324,7 +332,6 @@ if (btnBlacklistMenuSync) {
       const tags = user.blacklisted_tags || '';
       saveE621Blacklist(tags);
       if (blacklistMenuTags) blacklistMenuTags.value = tags;
-      if (settingE621Blacklist) settingE621Blacklist.value = tags;
       const count = tags.split('\n').map(s => s.trim()).filter(Boolean).length;
       applyBlacklistToCurrentFeed();
       if (blacklistMenuStatus) {
@@ -361,6 +368,24 @@ if (btnE621SaveAuth) {
       setTimeout(() => {
         if (e621AuthStatus.textContent === 'Account saved!') {
           e621AuthStatus.textContent = '';
+        }
+      }, 3000);
+    }
+  });
+}
+
+if (btnGelbooruSaveAuth) {
+  btnGelbooruSaveAuth.addEventListener('click', () => {
+    const userVal = settingGelbooruUserId ? settingGelbooruUserId.value.trim() : '';
+    const keyVal = settingGelbooruApiKey ? settingGelbooruApiKey.value.trim() : '';
+    saveGelbooruAuth(userVal, keyVal);
+    updateSiteSpecificUI();
+    if (gelbooruAuthStatus) {
+      gelbooruAuthStatus.textContent = 'Account saved!';
+      gelbooruAuthStatus.style.color = '#3fb950';
+      setTimeout(() => {
+        if (gelbooruAuthStatus.textContent === 'Account saved!') {
+          gelbooruAuthStatus.textContent = '';
         }
       }, 3000);
     }
@@ -450,6 +475,7 @@ if (siteSelector) {
   renderServiceFilters(state.currentSite);
   siteSelector.addEventListener('change', (e) => { 
     state.currentSite = e.target.value; 
+    updateSourceSwitcher(state.currentSite);
     resetHomeState();
     updateSiteSpecificUI();
     renderServiceFilters(state.currentSite);
@@ -458,6 +484,28 @@ if (siteSelector) {
   resetHomeState();
   renderServiceFilters(state.currentSite);
 }
+
+const sourceSwitcher = document.getElementById('source-switcher');
+if (sourceSwitcher) {
+  const btns = sourceSwitcher.querySelectorAll('.source-btn');
+  btns.forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const targetSite = btn.dataset.site;
+      if (!targetSite || targetSite === state.currentSite) return;
+      state.currentSite = targetSite;
+      if (siteSelector) siteSelector.value = targetSite;
+      updateSourceSwitcher(targetSite);
+      resetHomeState();
+      updateSiteSpecificUI();
+      renderServiceFilters(state.currentSite);
+    });
+  });
+}
+
+window.addEventListener('resize', () => {
+  updateSourceSwitcher(state.currentSite);
+});
 
 window.addEventListener('pageshow', () => {
   resetHomeState();
@@ -528,7 +576,7 @@ if (btnLatest) {
     updateNavTabs(null);
     if (navBack) navBack.classList.remove('hidden'); 
     showView(feedView, true);
-    if (state.currentSite !== 'e621') loadCreators();
+    if (state.currentSite !== 'e621' && state.currentSite !== 'gelbooru') loadCreators();
     fetchPosts();
   });
 }
@@ -536,9 +584,9 @@ if (btnLatest) {
 const btnCreators = document.getElementById('btn-creators');
 if (btnCreators) {
   btnCreators.addEventListener('click', () => {
-    if (state.currentSite === 'e621') {
+    if (state.currentSite === 'e621' || state.currentSite === 'gelbooru') {
       resetFeed();
-      state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/popular`;
+      state.currentFeedEndpoint = `${PROXY_URL}/${state.currentSite}/api/v1/popular`;
       state.currentFeedCreatorName = null;
       updateNavTabs(null);
       if (navBack) navBack.classList.remove('hidden');
@@ -580,11 +628,12 @@ if (btnE621Favorites) {
 const btnE621Search = document.getElementById('btn-e621-search');
 const inputE621Tag = document.getElementById('e621-tag-input');
 
-function triggerE621Search() {
+function triggerBooruSearch() {
   const tagVal = inputE621Tag ? inputE621Tag.value.trim() : '';
   if (!tagVal) return;
   resetFeed();
-  state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(tagVal)}`;
+  const currentSite = state.currentSite;
+  state.currentFeedEndpoint = `${PROXY_URL}/${currentSite}/api/v1/posts?tags=${encodeURIComponent(tagVal)}`;
   state.currentFeedCreatorName = null;
   updateNavTabs(null);
   if (navBack) navBack.classList.remove('hidden');
@@ -593,13 +642,13 @@ function triggerE621Search() {
 }
 
 if (btnE621Search) {
-  btnE621Search.addEventListener('click', triggerE621Search);
+  btnE621Search.addEventListener('click', triggerBooruSearch);
 }
 if (inputE621Tag) {
   inputE621Tag.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      triggerE621Search();
+      triggerBooruSearch();
     }
   });
 }

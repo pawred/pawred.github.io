@@ -23,6 +23,7 @@ import {
   getE621Blacklist,
   isE621BlacklistEnabled,
 } from "./e621Auth.js";
+import { getGelbooruHeaders } from "./gelbooruAuth.js";
 
 export const feed = document.getElementById("feed");
 export const feedLoading = document.getElementById("feed-loading");
@@ -170,6 +171,13 @@ export const mediaObserver = new IntersectionObserver(
             }
           }
           return;
+        }
+
+        const card = item.closest(".post-card");
+        if (card && typeof card._setupFamily === "function") {
+          const fn = card._setupFamily;
+          card._setupFamily = null;
+          fn();
         }
 
         if (!item.dataset.loaded && !item._loadTimer) {
@@ -396,6 +404,8 @@ export async function loadMediaWithProgress(item) {
   const filename = item.dataset.originalName || (item.dataset.path || url).split("/").pop() || "media";
 
   const triggerRetry = () => {
+    delete item._videoRetryCount;
+    delete item._triedDirectFallback;
     detachMedia(item, true);
     item.dataset.loaded = "true";
     loadMediaWithProgress(item);
@@ -886,7 +896,55 @@ export async function loadMediaWithProgress(item) {
     });
     video.addEventListener("error", () => {
       if (videoTimeout) clearTimeout(videoTimeout);
+
+      if (state.currentSite === "e621" && !item._triedDirectFallback) {
+        item._triedDirectFallback = true;
+        const p = item.dataset.path || "";
+        const cleanSub = p.replace(/^\/?(?:data\/)?/, "");
+        if (cleanSub) {
+          const directUrl = `https://static1.e621.net/data/${cleanSub}`;
+          const proxyMediaUrl = `${PROXY_URL}/e621/file/data/${cleanSub}`;
+          const targetFallback = (video.src && video.src.includes(PROXY_URL)) ? directUrl : proxyMediaUrl;
+          if (video.src !== targetFallback) {
+            video.src = targetFallback;
+            video.load();
+            return;
+          }
+        }
+      }
+
+      if (state.currentSite === "cum" && !item._triedDirectFallback) {
+        item._triedDirectFallback = true;
+        const p = item.dataset.path || "";
+        const cleanSub = p.replace(/^\/?(?:data\/)?(?:media\/)?/, "");
+        if (cleanSub) {
+          const directUrl = `https://cdn.cum.st/media/${cleanSub}`;
+          const proxyMediaUrl = `${PROXY_URL}/cum/file/data/media/${cleanSub}`;
+          const targetFallback = (video.src && video.src.includes("cdn.cum.st")) ? proxyMediaUrl : directUrl;
+          if (video.src !== targetFallback) {
+            video.src = targetFallback;
+            video.load();
+            return;
+          }
+        }
+      }
+
+      const retryCount = (item._videoRetryCount || 0) + 1;
+      item._videoRetryCount = retryCount;
+      if (retryCount <= 2) {
+        setTimeout(() => {
+          if (item.isConnected && !item._isDetached) {
+            video.load();
+          }
+        }, 800);
+        return;
+      }
+
       video.style.display = "none";
+      const wrapper = video.closest(".video-player-wrapper");
+      if (wrapper) {
+        wrapper.style.display = "none";
+      }
       const path = item.dataset.path;
       const isImg = path && /\.(jpe?g|png|webp|gif)$/i.test(path);
       if (isImg && (state.currentSite === "pawchive" || state.currentSite === "kemono")) {
@@ -930,11 +988,11 @@ export async function loadMediaWithProgress(item) {
   }
 
   const path = item.dataset.path;
-  const isImageSite = state.currentSite === "kemono" || state.currentSite === "pawchive";
+  const isImageSite = state.currentSite === "kemono" || state.currentSite === "pawchive" || state.currentSite === "cum";
   const isImageFile = path && /\.(jpe?g|png|webp|gif)$/i.test(path);
   // Progressive loading (thumbnail first, full-res upgrade later) is opt-in;
   // by default the full-resolution image is fetched directly.
-  const previewThumbUrl = (state.currentSite === "e621" && item._post?.preview_url)
+  const previewThumbUrl = ((state.currentSite === "e621" || state.currentSite === "gelbooru") && item._post?.preview_url)
     ? getMediaUrl(item._post.preview_url)
     : (isImageSite && isImageFile && !path.startsWith("http://") && !path.startsWith("https://")
       ? `${PROXY_URL}/${state.currentSite}/thumbnail/data${path}`
@@ -996,6 +1054,19 @@ export async function loadMediaWithProgress(item) {
         img.dataset.triedThumb = "true";
         img.src = `${PROXY_URL}/${state.currentSite}/thumbnail/data${p}`;
         return;
+      }
+      if (state.currentSite === "cum" && !img.dataset.triedFallback) {
+        img.dataset.triedFallback = "true";
+        const cleanSub = p ? p.replace(/^\/?(?:data\/)?(?:media\/)?/, "") : "";
+        if (cleanSub) {
+          const directUrl = `https://cdn.cum.st/media/${cleanSub}`;
+          const proxyUrl = `${PROXY_URL}/cum/file/data/media/${cleanSub}`;
+          const targetFallback = (img.src && img.src.includes("cdn.cum.st")) ? proxyUrl : directUrl;
+          if (img.src !== targetFallback) {
+            img.src = targetFallback;
+            return;
+          }
+        }
       }
       img.style.display = "none";
       showMediaUnavailableWarning(progressOverlay, {
@@ -1146,6 +1217,21 @@ export function handleCarouselScrollSettled(container, count) {
   }
 
   const finalIdx = curIdx <= 0 ? count : (curIdx >= count + 1 ? 1 : curIdx);
+  const realIdx = finalIdx - 1;
+  const indicator = container.parentElement ? container.parentElement.querySelector(".media-indicator") : null;
+  if (indicator && container._familyPosts && container._familyPosts[realIdx]) {
+    const activePost = container._familyPosts[realIdx];
+    const isParent = String(activePost.id) === String(container._rootParentId);
+    let label = "Parent";
+    if (!isParent) {
+      const childPosts = container._familyPosts.filter((p) => String(p.id) !== String(container._rootParentId));
+      const childIdx = childPosts.findIndex((p) => String(p.id) === String(activePost.id));
+      const childNum = childIdx !== -1 ? childIdx + 1 : realIdx + 1;
+      label = `Child ${childNum}`;
+    }
+    indicator.innerHTML = `<span class="carousel-family-badge">${label}</span> ${realIdx + 1} / ${count}`;
+  }
+
   const activeChild = container.children[finalIdx];
   if (activeChild) {
     Array.from(container.children).forEach((child) => {
@@ -1408,11 +1494,16 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
     return;
   }
 
-  if (post.service === "e621") {
-    // 1. e621 does not have titles: hide title element
+  if (post.service === "e621" || post.service === "gelbooru") {
+    // 1. Hide title element if empty
     if (titleEl) {
-      titleEl.innerHTML = "";
-      titleEl.style.display = "none";
+      if (post.title && post.title.trim()) {
+        titleEl.textContent = post.title;
+        titleEl.style.display = "block";
+      } else {
+        titleEl.innerHTML = "";
+        titleEl.style.display = "none";
+      }
     }
 
     // 2. Author: display artists in gold, post badge, and rating badge
@@ -1425,22 +1516,56 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
 
       const artists = (post.artists && post.artists.length > 0)
         ? post.artists
-        : (post.tags_categorized?.artist?.length ? post.tags_categorized.artist : [post.user || "unknown"]);
+        : (post.tags_categorized?.artist?.length ? post.tags_categorized.artist : (post.service === "gelbooru" ? [] : [post.user || "unknown"]));
 
-      const artistPrefix = document.createElement("span");
-      artistPrefix.style.opacity = "0.75";
-      artistPrefix.textContent = artists.length > 1 ? "Artists:" : "Artist:";
-      authorEl.appendChild(artistPrefix);
+      if (artists.length > 0) {
+        const artistPrefix = document.createElement("span");
+        artistPrefix.style.opacity = "0.75";
+        artistPrefix.textContent = artists.length > 1 ? "Artists:" : "Artist:";
+        authorEl.appendChild(artistPrefix);
 
-      artists.forEach((art, idx) => {
+        artists.forEach((art, idx) => {
+          const artLink = document.createElement("a");
+          artLink.className = post.service === "gelbooru" ? "e621-artist-label gelbooru-artist-label" : "e621-artist-label";
+          artLink.textContent = art.replace(/_/g, " ");
+          artLink.title = `Search artist: ${art}`;
+          artLink.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            state.currentFeedEndpoint = `${PROXY_URL}/${state.currentSite}/api/v1/posts?tags=${encodeURIComponent(art)}`;
+            state.currentFeedCreatorName = null;
+            resetFeed();
+            fetchPosts();
+            updateNavTabs(null);
+            closeAllPostInfo();
+          });
+          authorEl.appendChild(artLink);
+
+          if (idx < artists.length - 1) {
+            const sep = document.createElement("span");
+            sep.textContent = ",";
+            sep.style.opacity = "0.5";
+            authorEl.appendChild(sep);
+          }
+        });
+      } else if (post.service === "gelbooru") {
+        const unknownSpan = document.createElement("span");
+        unknownSpan.style.opacity = "0.75";
+        unknownSpan.textContent = post.uploader ? `Uploader: ${post.uploader}` : "Artist: Unknown";
+        authorEl.appendChild(unknownSpan);
+      } else if (post.user) {
+        const userPrefix = document.createElement("span");
+        userPrefix.style.opacity = "0.75";
+        userPrefix.textContent = "Artist:";
+        authorEl.appendChild(userPrefix);
+
         const artLink = document.createElement("a");
         artLink.className = "e621-artist-label";
-        artLink.textContent = art.replace(/_/g, " ");
-        artLink.title = `Search artist: ${art}`;
+        artLink.textContent = post.user.replace(/_/g, " ");
         artLink.addEventListener("click", (e) => {
           e.preventDefault();
           e.stopPropagation();
-          state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(art)}`;
+          state.currentFeedEndpoint = `${PROXY_URL}/${state.currentSite}/api/v1/posts?tags=${encodeURIComponent(post.user)}`;
           state.currentFeedCreatorName = null;
           resetFeed();
           fetchPosts();
@@ -1448,23 +1573,16 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
           closeAllPostInfo();
         });
         authorEl.appendChild(artLink);
-
-        if (idx < artists.length - 1) {
-          const sep = document.createElement("span");
-          sep.textContent = ",";
-          sep.style.opacity = "0.5";
-          authorEl.appendChild(sep);
-        }
-      });
+      }
 
       if (post.id) {
         const postBadge = document.createElement("a");
         postBadge.className = "e621-post-badge";
-        postBadge.href = `https://e621.net/posts/${post.id}`;
+        postBadge.href = getServicePostUrl(post.service, post.user, post.id);
         postBadge.target = "_blank";
         postBadge.rel = "noopener noreferrer";
         postBadge.textContent = `#${post.id}`;
-        postBadge.title = "Open on e621.net";
+        postBadge.title = `Open on ${post.service}`;
         authorEl.appendChild(postBadge);
       }
 
@@ -1476,11 +1594,11 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
         rBadge.style.borderRadius = "4px";
         rBadge.style.marginLeft = "4px";
         const r = String(post.rating).toLowerCase();
-        if (r === "s") {
-          rBadge.textContent = "Safe";
+        if (r === "s" || r === "general" || r === "g") {
+          rBadge.textContent = (r === "s" && post.service === "gelbooru") ? "Sensitive" : (r === "g" || r === "general" ? "General" : "Safe");
           rBadge.style.background = "rgba(40, 167, 69, 0.25)";
           rBadge.style.color = "#4cd964";
-        } else if (r === "q") {
+        } else if (r === "q" || r === "questionable") {
           rBadge.textContent = "Questionable";
           rBadge.style.background = "rgba(255, 193, 7, 0.25)";
           rBadge.style.color = "#ffcc00";
@@ -1531,11 +1649,12 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
         { key: "general", label: "General", cssClass: "e621-tag-general", catClass: "e621-cat-general" },
         { key: "lore", label: "Lore", cssClass: "e621-tag-lore", catClass: "e621-cat-lore" },
         { key: "meta", label: "Meta", cssClass: "e621-tag-meta", catClass: "e621-cat-meta" },
+        { key: "deprecated", label: "Deprecated", cssClass: "e621-tag-deprecated", catClass: "e621-cat-deprecated" },
         { key: "invalid", label: "Invalid", cssClass: "e621-tag-invalid", catClass: "e621-cat-invalid" },
       ];
 
       const tagsSection = document.createElement("div");
-      tagsSection.className = "e621-tags-section";
+      tagsSection.className = post.service === "gelbooru" ? "e621-tags-section gelbooru-tags-section" : "e621-tags-section";
 
       let hasTags = false;
       categories.forEach(({ key, label, cssClass, catClass }) => {
@@ -1606,7 +1725,7 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
           nameBtn.title = `Search only '${t}'`;
           nameBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(t)}`;
+            state.currentFeedEndpoint = `${PROXY_URL}/${state.currentSite}/api/v1/posts?tags=${encodeURIComponent(t)}`;
             state.currentFeedCreatorName = null;
             resetFeed();
             fetchPosts();
@@ -1652,8 +1771,8 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
     authorEl.style.alignItems = "center";
     authorEl.style.gap = "8px";
 
-    const creator = state.allCreators.find((c) => c.id === post.user && c.service === post.service);
-    const displayName = post.authorName || (creator ? creator.name : state.currentFeedCreatorName) || post.user || "Unknown";
+    const creator = state.allCreators.find((c) => String(c.id) === String(post.user) && (!post.service || c.service === post.service));
+    const displayName = post.authorName || (creator ? (creator.name || creator.displayName) : state.currentFeedCreatorName) || post.user || "Unknown";
     const creatorUrl = getServiceCreatorUrl(post.service, post.user, displayName);
 
     const authorLink = document.createElement("a");
@@ -1722,7 +1841,7 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
     titleLink.href = postUrl;
     titleLink.target = "_blank";
     titleLink.rel = "noopener noreferrer";
-    titleLink.textContent = post.title || "Untitled";
+    titleLink.textContent = post.title || (post.id ? `Post #${post.id}` : "Untitled");
     titleEl.appendChild(titleLink);
   }
 
@@ -1789,28 +1908,56 @@ export function getCurrentGalleryPost() {
 
 const e621FamilyCache = new Map();
 
-export async function fetchE621FamilyPosts(rootParentId) {
+export async function fetchE621FamilyPosts(rootParentId, knownPost = null) {
   const cacheKey = String(rootParentId);
   if (e621FamilyCache.has(cacheKey)) {
     return e621FamilyCache.get(cacheKey);
   }
 
+  const e621Headers = getE621Headers();
   let posts = [];
   try {
-    // 1. Primary: Direct fetch to e621 (native CORS, residential IP avoids bot blocks)
-    const directUrl = new URL("https://e621.net/posts.json");
-    directUrl.searchParams.set("tags", `~parent:${rootParentId} ~id:${rootParentId}`);
-    directUrl.searchParams.set("limit", "100");
+    let parentPost = (knownPost && String(knownPost.id) === String(rootParentId)) ? knownPost : null;
+    if (!parentPost) {
+      try {
+        let pRes = null;
+        try {
+          pRes = await fetch(`https://e621.net/posts/${rootParentId}.json`, { headers: e621Headers });
+        } catch (_) {}
+        if (!pRes || !pRes.ok) {
+          try {
+            pRes = await fetch(`${PROXY_URL}/e621/posts/${rootParentId}.json`, { headers: e621Headers });
+          } catch (_) {}
+        }
+        if (pRes && pRes.ok && (pRes.headers.get("content-type") || "").includes("application/json")) {
+          const pData = await pRes.json();
+          const pObj = pData.post || pData;
+          if (pObj && pObj.id) {
+            parentPost = transformE621PostClient(pObj);
+          }
+        }
+      } catch (err) {
+        console.warn("Could not fetch parent post:", err);
+      }
+    }
+
+    // Fetch children: parent:rootParentId (direct primary, worker fallback)
     let res = null;
     try {
-      res = await fetch(directUrl.toString());
+      const dUrl = `https://e621.net/posts.json?limit=100&tags=${encodeURIComponent(`parent:${rootParentId}`)}`;
+      const dRes = await fetch(dUrl, { headers: e621Headers });
+      if (dRes && dRes.ok && (dRes.headers.get("content-type") || "").includes("application/json")) {
+        res = dRes;
+      }
     } catch (_) {}
 
-    // 2. Fallback: Proxy worker if direct fetch failed (e.g. ISP censorship/network failure)
     if (!res || !res.ok) {
-      const ep = `${PROXY_URL}/e621/api/v1/posts?limit=100&tags=${encodeURIComponent(`~parent:${rootParentId} ~id:${rootParentId}`)}`;
       try {
-        res = await fetch(ep);
+        const ep = `${PROXY_URL}/e621/api/v1/posts?limit=100&tags=${encodeURIComponent(`parent:${rootParentId}`)}`;
+        const pRes = await fetch(ep, { headers: e621Headers });
+        if (pRes && pRes.ok && (pRes.headers.get("content-type") || "").includes("application/json")) {
+          res = pRes;
+        }
       } catch (_) {}
     }
 
@@ -1819,14 +1966,23 @@ export async function fetchE621FamilyPosts(rootParentId) {
       const rawPosts = Array.isArray(data) ? data : (Array.isArray(data.posts) ? data.posts : []);
       const normalized = rawPosts.map((p) => (p.service === "e621" && p.tags_categorized ? p : transformE621PostClient(p)));
 
-      const parentPost = normalized.find((p) => String(p.id) === String(rootParentId));
-      const childPosts = normalized.filter((p) => String(p.id) !== String(rootParentId));
+      let childPosts = normalized.filter((p) => String(p.id) !== String(rootParentId));
+      if (knownPost && String(knownPost.id) !== String(rootParentId)) {
+        if (!childPosts.some((p) => String(p.id) === String(knownPost.id))) {
+          childPosts.push(knownPost);
+        }
+      }
       childPosts.sort((a, b) => Number(a.id) - Number(b.id));
 
       if (parentPost) {
         posts = [parentPost, ...childPosts];
       } else {
         posts = childPosts;
+      }
+    } else if (parentPost) {
+      posts = [parentPost];
+      if (knownPost && String(knownPost.id) !== String(rootParentId)) {
+        posts.push(knownPost);
       }
     }
   } catch (err) {
@@ -1843,10 +1999,11 @@ function setupE621FamilyCarousel(card, post, carousel, indicator, author, title,
   const rootParentId = post.relationships?.parent_id || post.id;
   if (!rootParentId) return;
 
-  fetchE621FamilyPosts(rootParentId).then((familyPosts) => {
+  fetchE621FamilyPosts(rootParentId, post).then((familyPosts) => {
     if (!familyPosts || familyPosts.length <= 1) return;
 
     carousel._familyPosts = familyPosts;
+    carousel._rootParentId = String(rootParentId);
     carousel.dataset.mediaCount = String(familyPosts.length);
 
     Array.from(carousel.children).forEach((c) => {
@@ -1901,10 +2058,15 @@ function setupE621FamilyCarousel(card, post, carousel, indicator, author, title,
 
     indicator.style.display = "block";
     indicator.style.pointerEvents = "auto";
-    const hasParentInList = familyPosts.some((p) => String(p.id) === String(rootParentId));
-    const isParent = String(familyPosts[targetIndex].id) === String(rootParentId);
-    const childNum = hasParentInList ? targetIndex : targetIndex + 1;
-    const label = isParent ? "Parent" : `Child ${childNum}`;
+    const activePost = familyPosts[targetIndex];
+    const isParent = String(activePost.id) === String(carousel._rootParentId);
+    let label = "Parent";
+    if (!isParent) {
+      const childPosts = familyPosts.filter((p) => String(p.id) !== String(carousel._rootParentId));
+      const childIdx = childPosts.findIndex((p) => String(p.id) === String(activePost.id));
+      const childNum = childIdx !== -1 ? childIdx + 1 : targetIndex + 1;
+      label = `Child ${childNum}`;
+    }
     indicator.innerHTML = `<span class="carousel-family-badge">${label}</span> ${targetIndex + 1} / ${familyPosts.length}`;
 
     requestAnimationFrame(() => {
@@ -1917,7 +2079,95 @@ function setupE621FamilyCarousel(card, post, carousel, indicator, author, title,
   });
 }
 
-export function createPostCard(post) {
+export function normalizePost(post) {
+  if (!post) return post;
+
+  // 1. Service resolution
+  if (!post.service) {
+    const match = state.currentFeedEndpoint && state.currentFeedEndpoint.match(/\/api\/v1\/([^\/]+)\/user\/([^\/]+)/);
+    if (match) {
+      post.service = match[1];
+      if (!post.user && !post.user_id && !post.creatorId) post.user = match[2];
+    }
+  }
+
+  // 2. User / Creator ID resolution (especially Coomer format where it's creatorId)
+  if (!post.user) {
+    post.user = post.creatorId || post.creator_id || post.user_id || (post.creator && (post.creator.id || post.creator.name)) || "";
+  }
+
+  // 3. Author display name resolution
+  if (!post.authorName) {
+    post.authorName = post.creatorName || (post.creator && (post.creator.displayName || post.creator.name)) || "";
+    if (!post.authorName && state.currentFeedCreatorName) {
+      post.authorName = state.currentFeedCreatorName;
+    }
+    if (!post.authorName && post.user && Array.isArray(state.allCreators) && state.allCreators.length > 0) {
+      const found = state.allCreators.find((c) => String(c.id) === String(post.user) && (!post.service || c.service === post.service));
+      if (found) post.authorName = found.name || found.displayName;
+    }
+    if (!post.authorName && post.user) {
+      post.authorName = post.user;
+    }
+  }
+
+  // 4. Content / Caption resolution
+  if (!post.content) {
+    post.content = post.captionHtml || post.captionText || post.caption || post.substring || "";
+  }
+
+  // 5. Title resolution: if title is missing/null/empty or "Untitled", fall back to caption snippet or Post #id
+  const hasRawTitle = typeof post.title === "string" && post.title.trim().length > 0 && post.title.trim().toLowerCase() !== "untitled";
+  if (!hasRawTitle) {
+    const textFallback = (post.captionText || post.caption || (typeof post.content === "string" ? post.content.replace(/<[^>]+>/g, " ") : "")).trim();
+    if (textFallback) {
+      const firstLine = textFallback.split(/[\r\n]+/)[0].trim();
+      post.title = firstLine.length > 90 ? firstLine.slice(0, 87) + "..." : firstLine;
+    } else if (post.id) {
+      post.title = `Post #${post.id}`;
+    } else {
+      post.title = "";
+    }
+  }
+
+  // 6. Media attachments normalization (for Coomer new format with storageKey/sha256)
+  if (state.currentSite === "cum" || post.service === "onlyfans" || post.service === "fansly") {
+    if (Array.isArray(post.attachments)) {
+      post.attachments.forEach((att) => {
+        if (!att) return;
+        if (!att.path) {
+          const sha = att.storageKey || att.sha256 || att.id;
+          if (sha) {
+            let variantName = "original.jpg";
+            if (Array.isArray(att.variants) && att.variants.length > 0 && att.variants[0].name) {
+              variantName = att.variants[0].name;
+            } else if (att.originalFilename) {
+              const ext = att.originalFilename.split(".").pop();
+              if (ext) variantName = `original.${ext}`;
+            } else if (att.kind === "video" || (att.mimeType && att.mimeType.startsWith("video/"))) {
+              variantName = "original.mp4";
+            }
+            att.path = `/media/${sha}/${variantName}`;
+            if (!att.name) att.name = att.originalFilename || variantName;
+          }
+        }
+      });
+    }
+  }
+
+  // Legacy hash+ext fallback
+  if (post.hash && post.ext && !post.file && !post.attachments) {
+    post.file = {
+      name: `${post.hash}.${post.ext}`,
+      path: `/${post.hash.substring(0, 2)}/${post.hash.substring(2, 4)}/${post.hash}.${post.ext}`
+    };
+  }
+
+  return post;
+}
+
+export function createPostCard(rawPost) {
+  const post = normalizePost(rawPost);
   if (window.pawHideWip || localStorage.getItem("paw_hide_wip") === "true") {
     const postTitle = (post?.title || post?.subject || "").trim();
     if (postTitle) {
@@ -2280,11 +2530,14 @@ export function createPostCard(post) {
 
         if (carousel._familyPosts && carousel._familyPosts[realIndex]) {
           const activePost = carousel._familyPosts[realIndex];
-          const rootParentId = activePost.relationships?.parent_id || activePost.id;
-          const hasParentInList = carousel._familyPosts.some((p) => String(p.id) === String(rootParentId));
-          const isParent = String(activePost.id) === String(rootParentId);
-          const childNum = hasParentInList ? realIndex : realIndex + 1;
-          const label = isParent ? "Parent" : `Child ${childNum}`;
+          const isParent = String(activePost.id) === String(carousel._rootParentId);
+          let label = "Parent";
+          if (!isParent) {
+            const childPosts = carousel._familyPosts.filter((p) => String(p.id) !== String(carousel._rootParentId));
+            const childIdx = childPosts.findIndex((p) => String(p.id) === String(activePost.id));
+            const childNum = childIdx !== -1 ? childIdx + 1 : realIndex + 1;
+            label = `Child ${childNum}`;
+          }
           indicator.innerHTML = `<span class="carousel-family-badge">${label}</span> ${realIndex + 1} / ${count}`;
           if (card._post !== activePost) {
             card._post = activePost;
@@ -2319,7 +2572,18 @@ export function createPostCard(post) {
     card.appendChild(carousel);
 
     if (post.service === "e621" && (post.relationships?.parent_id || post.relationships?.has_children)) {
-      setupE621FamilyCarousel(card, post, carousel, indicator, author, title, content);
+      const rootParentId = post.relationships?.parent_id || post.id;
+      const isParent = !post.relationships?.parent_id;
+      carousel._rootParentId = String(rootParentId);
+      indicator.innerHTML = `<span class="carousel-family-badge">${isParent ? "Parent" : "Child 1"}</span> 1 / 1`;
+      indicator.style.display = "block";
+      indicator.style.pointerEvents = "auto";
+      card._setupFamily = () => setupE621FamilyCarousel(card, post, carousel, indicator, author, title, content);
+      if (!feed.firstChild) {
+        const fn = card._setupFamily;
+        card._setupFamily = null;
+        fn();
+      }
     }
 
     const info = document.createElement("div");
@@ -2677,7 +2941,6 @@ export async function fetchPosts() {
     let res;
     if (state.currentSite === "e621") {
       const e621Headers = getE621Headers();
-      // 1. Primary: Direct fetch to e621 (native CORS, residential IP avoids bot blocks)
       const artistMatch = state.currentFeedEndpoint.match(/\/api\/v1\/e621\/user\/([^\/]+)\/posts/);
       const artistTag = artistMatch ? decodeURIComponent(artistMatch[1]) : "";
       const incomingUrl = new URL(state.currentFeedEndpoint, window.location.href);
@@ -2695,12 +2958,12 @@ export async function fetchPosts() {
 
       try {
         const directRes = await fetch(directUrl.toString(), { headers: e621Headers });
-        if (directRes.ok) {
+        if (directRes && directRes.ok) {
           res = directRes;
         }
       } catch (_) {}
 
-      // 2. Fallback: Proxy worker if direct fetch failed (e.g. ISP censorship)
+      // Fallback via proxy worker if direct fetch failed
       if (!res || !res.ok) {
         let proxyUrl = state.currentFeedEndpoint;
         const separator = proxyUrl.includes("?") ? "&" : "?";
@@ -2716,11 +2979,14 @@ export async function fetchPosts() {
         url += `${separator}o=${state.offset}`;
       }
 
+      const gelHeaders = state.currentSite === "gelbooru" ? getGelbooruHeaders() : {};
+      const fetchOptions = Object.keys(gelHeaders).length ? { headers: gelHeaders } : undefined;
+
       let attempts = 0;
       while (attempts < 3) {
         attempts++;
         try {
-          res = await fetchWithRetry(url);
+          res = await fetchWithRetry(url, fetchOptions);
           break;
         } catch (e) {
           if (attempts < 3) {
@@ -2733,11 +2999,16 @@ export async function fetchPosts() {
       }
     }
 
-    if (!res || !res.ok) throw new Error("Failed to fetch: " + (res ? `${res.status} ${res.statusText}` : "timeout"));
+    if (!res || !res.ok) {
+      if (res && res.status === 401 && state.currentSite === "gelbooru") {
+        throw new Error("Gelbooru API authentication required (401). Please add your Gelbooru User ID and API Key in Cloudflare Worker secrets or the Gelbooru Account panel on the home page.");
+      }
+      throw new Error("Failed to fetch: " + (res ? `${res.status} ${res.statusText}` : "timeout"));
+    }
 
     let posts = await res.json();
     let rawBatchCount = 0;
-    if (posts && Array.isArray(posts.posts)) {
+    if (state.currentSite === "e621" && posts && Array.isArray(posts.posts)) {
       rawBatchCount = posts.posts.length;
       posts = posts.posts.map(transformE621PostClient);
       if (isE621BlacklistEnabled()) {
@@ -2746,6 +3017,9 @@ export async function fetchPosts() {
           posts = posts.filter((p) => !isPostBlacklisted(p, rules));
         }
       }
+    } else if (posts && Array.isArray(posts.posts)) {
+      rawBatchCount = posts.posts.length;
+      posts = posts.posts;
     } else if (!Array.isArray(posts)) {
       posts = posts.announcements || posts.dms || posts.fancards || [];
       rawBatchCount = posts.length;
@@ -2776,21 +3050,8 @@ export async function fetchPosts() {
       }
 
       let addedCount = 0;
-      posts.forEach((post) => {
-        if (!post.service) {
-          const match = state.currentFeedEndpoint.match(/\/api\/v1\/([^\/]+)\/user\/([^\/]+)/);
-          if (match) {
-            post.service = match[1];
-            if (!post.user && !post.user_id) post.user = match[2];
-          }
-        }
-        if (!post.user && post.user_id) post.user = post.user_id;
-        if (post.hash && post.ext && !post.file && !post.attachments) {
-          post.file = {
-            name: `${post.hash}.${post.ext}`,
-            path: `/${post.hash.substring(0, 2)}/${post.hash.substring(2, 4)}/${post.hash}.${post.ext}`
-          };
-        }
+      posts.forEach((rawPost) => {
+        const post = normalizePost(rawPost);
         const card = createPostCard(post);
         if (card) {
           feed.appendChild(card);

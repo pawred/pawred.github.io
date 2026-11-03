@@ -163,27 +163,79 @@ export function updateSiteSpecificUI() {
       kemono: "Kemono",
       cum: "Coomer",
       e621: "e621",
+      gelbooru: "Gelbooru",
     };
-    creatorsTitle.textContent = state.currentSite === "e621" ? "e621 Artists" : `${displayNames[state.currentSite] || "Selected"} creators`;
+    creatorsTitle.textContent = state.currentSite === "e621"
+      ? "e621 Artists"
+      : (state.currentSite === "gelbooru" ? "Gelbooru Tags" : `${displayNames[state.currentSite] || "Selected"} creators`);
   }
 
   const e621SearchContainer = document.getElementById("e621-search-container");
+  const inputE621Tag = document.getElementById("e621-tag-input");
   const btnCreators = document.getElementById("btn-creators");
   const btnE621Favorites = document.getElementById("btn-e621-favorites");
   const e621AccountPanel = document.getElementById("e621-account-panel");
+  const gelbooruAccountPanel = document.getElementById("gelbooru-account-panel");
+  const navBlacklist = document.getElementById("nav-blacklist");
+  const blacklistMenu = document.getElementById("blacklist-menu");
   const auth = getE621Auth();
   const hasAccount = Boolean(auth && auth.username);
 
-  if (state.currentSite === "e621") {
+  const isBooru = state.currentSite === "e621" || state.currentSite === "gelbooru";
+
+  if (isBooru) {
+    if (navBlacklist) navBlacklist.classList.toggle("hidden", state.currentSite !== "e621");
     if (e621SearchContainer) e621SearchContainer.style.display = "flex";
-    if (btnCreators) btnCreators.textContent = "Popular Posts";
-    if (btnE621Favorites) btnE621Favorites.style.display = hasAccount ? "" : "none";
-    if (e621AccountPanel) e621AccountPanel.style.display = "block";
+    if (inputE621Tag) {
+      inputE621Tag.placeholder = state.currentSite === "gelbooru"
+        ? "Search tags (e.g. 1girl, rating:general, sort:random)..."
+        : "Search tags (e.g. canine, rating:s, order:rank)...";
+    }
+    if (btnCreators) btnCreators.textContent = state.currentSite === "gelbooru" ? "Random Posts" : "Popular Posts";
+    if (btnE621Favorites) btnE621Favorites.style.display = (state.currentSite === "e621" && hasAccount) ? "" : "none";
+    if (e621AccountPanel) e621AccountPanel.style.display = state.currentSite === "e621" ? "block" : "none";
+    if (gelbooruAccountPanel) gelbooruAccountPanel.style.display = state.currentSite === "gelbooru" ? "block" : "none";
   } else {
+    if (navBlacklist) navBlacklist.classList.add("hidden");
+    if (blacklistMenu && blacklistMenu.classList.contains("active")) {
+      blacklistMenu.classList.remove("active");
+    }
     if (e621SearchContainer) e621SearchContainer.style.display = "none";
     if (btnCreators) btnCreators.textContent = "Creator List";
     if (btnE621Favorites) btnE621Favorites.style.display = "none";
     if (e621AccountPanel) e621AccountPanel.style.display = "none";
+    if (gelbooruAccountPanel) gelbooruAccountPanel.style.display = "none";
+  }
+
+  updateSourceSwitcher(state.currentSite);
+}
+
+export function updateSourceSwitcher(site) {
+  const switcher = document.getElementById("source-switcher");
+  const indicator = document.getElementById("source-indicator");
+  if (!switcher || !indicator) return;
+
+  const current = site || state.currentSite || "pawchive";
+  const buttons = switcher.querySelectorAll(".source-btn");
+  let activeBtn = null;
+
+  buttons.forEach((btn) => {
+    const isMatch = btn.dataset.site === current;
+    btn.classList.toggle("active", isMatch);
+    btn.setAttribute("aria-checked", isMatch ? "true" : "false");
+    if (isMatch) activeBtn = btn;
+  });
+
+  if (activeBtn) {
+    const left = activeBtn.offsetLeft;
+    const top = activeBtn.offsetTop;
+    const width = activeBtn.offsetWidth;
+    const height = activeBtn.offsetHeight;
+
+    indicator.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+    indicator.style.width = `${width}px`;
+    indicator.style.height = `${height}px`;
+    indicator.dataset.activeSite = current;
   }
 }
 
@@ -193,7 +245,9 @@ export function updateNavTabs(creator) {
   if (!navTabs) return;
   navTabs.innerHTML = "";
 
-  if (state.currentSite === "e621") {
+  const isBooru = state.currentSite === "e621" || state.currentSite === "gelbooru";
+
+  if (isBooru) {
     navTabs.classList.add("e621-search-mode");
 
     const ep = state.currentFeedEndpoint || "";
@@ -204,7 +258,7 @@ export function updateNavTabs(creator) {
         activeTag = u.searchParams.get("tags") || u.searchParams.get("q") || "";
       } catch (_) {}
     } else if (ep.includes("/popular")) {
-      activeTag = "order:rank";
+      activeTag = state.currentSite === "gelbooru" ? "sort:random" : "order:rank";
     }
 
     const form = document.createElement("form");
@@ -220,7 +274,9 @@ export function updateNavTabs(creator) {
     input.type = "text";
     input.id = "e621-nav-search-input";
     input.className = "e621-nav-search-input";
-    input.placeholder = "Search tags (e.g. canine, rating:s)...";
+    input.placeholder = state.currentSite === "gelbooru"
+      ? "Search tags (e.g. 1girl, rating:general)..."
+      : "Search tags (e.g. canine, rating:s)...";
     input.value = activeTag;
     input.autocomplete = "off";
     input.spellcheck = false;
@@ -260,33 +316,35 @@ export function updateNavTabs(creator) {
       }
     });
 
-    const auth = getE621Auth();
     let favBtn = null;
-    if (auth && auth.username) {
-      favBtn = document.createElement("button");
-      favBtn.type = "button";
-      favBtn.className = "e621-nav-fav-btn";
-      favBtn.id = "e621-nav-fav-btn";
-      favBtn.title = "View your e621 Favorites";
-      favBtn.innerHTML = `★ Favs`;
+    if (state.currentSite === "e621") {
+      const auth = getE621Auth();
+      if (auth && auth.username) {
+        favBtn = document.createElement("button");
+        favBtn.type = "button";
+        favBtn.className = "e621-nav-fav-btn";
+        favBtn.id = "e621-nav-fav-btn";
+        favBtn.title = "View your e621 Favorites";
+        favBtn.innerHTML = `★ Favs`;
 
-      if (activeTag.includes(`fav:${auth.username}`)) {
-        favBtn.classList.add("active");
+        if (activeTag.includes(`fav:${auth.username}`)) {
+          favBtn.classList.add("active");
+        }
+
+        favBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const favTag = `fav:${auth.username}`;
+          input.value = favTag;
+          clearBtn.style.display = "flex";
+          state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(favTag)}`;
+          state.currentFeedCreatorName = null;
+          resetFeed();
+          fetchPosts();
+          updateNavTabs(null);
+          closeAllPostInfo();
+        });
       }
-
-      favBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const favTag = `fav:${auth.username}`;
-        input.value = favTag;
-        clearBtn.style.display = "flex";
-        state.currentFeedEndpoint = `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(favTag)}`;
-        state.currentFeedCreatorName = null;
-        resetFeed();
-        fetchPosts();
-        updateNavTabs(null);
-        closeAllPostInfo();
-      });
     }
 
     const submitBtn = document.createElement("button");
@@ -305,9 +363,10 @@ export function updateNavTabs(creator) {
       e.preventDefault();
       e.stopPropagation();
       const q = input.value.trim();
+      const currentSite = state.currentSite;
       state.currentFeedEndpoint = q
-        ? `${PROXY_URL}/e621/api/v1/posts?tags=${encodeURIComponent(q)}`
-        : `${PROXY_URL}/e621/api/v1/posts`;
+        ? `${PROXY_URL}/${currentSite}/api/v1/posts?tags=${encodeURIComponent(q)}`
+        : `${PROXY_URL}/${currentSite}/api/v1/posts`;
       state.currentFeedCreatorName = null;
       resetFeed();
       fetchPosts();
@@ -973,8 +1032,9 @@ export function showView(viewElement, showNav = true) {
     if (nav) nav.classList.add("auto-hide");
     state.navManualVisible = false;
     if (navInfo) navInfo.classList.remove("hidden");
+    if (navBlacklist) navBlacklist.classList.toggle("hidden", state.currentSite !== "e621");
     if (navTabs) {
-      if (state.currentFeedCreatorName || state.currentSite === "e621") {
+      if (state.currentFeedCreatorName || state.currentSite === "e621" || state.currentSite === "gelbooru") {
         navTabs.classList.remove("hidden");
       } else {
         navTabs.classList.add("hidden");
@@ -989,5 +1049,6 @@ export function showView(viewElement, showNav = true) {
     }
     if (navTabs) navTabs.classList.add("hidden");
     if (navInfo) navInfo.classList.add("hidden");
+    if (navBlacklist) navBlacklist.classList.toggle("hidden", state.currentSite !== "e621");
   }
 }
