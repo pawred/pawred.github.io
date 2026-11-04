@@ -1084,4 +1084,193 @@ export function showView(viewElement, showNav = true) {
     const isBooru = state.currentSite === "e621" || state.currentSite === "gelbooru";
     if (navBlacklist) navBlacklist.classList.toggle("hidden", !isBooru);
   }
+
+  if (viewElement && viewElement !== welcomeScreen) {
+    ensureHistoryCushion();
+  }
+}
+
+let hasHistoryCushion = false;
+let isPoppingForHome = false;
+let lastBackTriggerTime = 0;
+let _resetHomeCallback = null;
+let _closeZipCallback = null;
+
+export function setResetHomeCallback(fn) {
+  _resetHomeCallback = fn;
+}
+
+export function setCloseZipCallback(fn) {
+  _closeZipCallback = fn;
+}
+
+export function isAtRootView() {
+  const isWelcome = welcomeScreen && welcomeScreen.classList.contains("active");
+  const isSettings = settingsMenu && settingsMenu.classList.contains("active");
+  const isBlacklist = blacklistMenu && blacklistMenu.classList.contains("active");
+  const zipViewer = document.getElementById("zip-viewer");
+  const isZip = zipViewer && !zipViewer.classList.contains("hidden");
+  const zipModal = document.getElementById("zip-file-info-modal");
+  const isZipModal = zipModal && zipModal.classList.contains("expanded");
+  const anyPostInfo = !!document.querySelector(".post-info.expanded");
+  const anyDropdown =
+    !!document.getElementById("linked-accounts-dropdown") || !!document.getElementById("cum-posts-dropdown");
+
+  return !!isWelcome && !isSettings && !isBlacklist && !isZip && !isZipModal && !anyPostInfo && !anyDropdown;
+}
+
+export function ensureHistoryCushion() {
+  if (!hasHistoryCushion) {
+    try {
+      window.history.pushState({ pawCushion: true }, "");
+      hasHistoryCushion = true;
+    } catch (_) {}
+  }
+}
+
+export function releaseHistoryCushion() {
+  if (hasHistoryCushion) {
+    isPoppingForHome = true;
+    hasHistoryCushion = false;
+    try {
+      window.history.back();
+    } catch (_) {}
+  }
+}
+
+export function executeAppBack() {
+  // 1. Settings menu
+  if (settingsMenu && settingsMenu.classList.contains("active")) {
+    settingsMenu.classList.remove("active");
+    updateNavVisibility();
+    return true;
+  }
+
+  // 2. Blacklist menu
+  if (blacklistMenu && blacklistMenu.classList.contains("active")) {
+    blacklistMenu.classList.remove("active");
+    updateNavVisibility();
+    return true;
+  }
+
+  // 3. Dropdowns
+  const dropdown =
+    document.getElementById("linked-accounts-dropdown") || document.getElementById("cum-posts-dropdown");
+  if (dropdown) {
+    if (dropdown._cleanup) dropdown._cleanup();
+    dropdown.remove();
+    updateNavVisibility();
+    return true;
+  }
+
+  // 4. Zip file info modal
+  const zipModal = document.getElementById("zip-file-info-modal");
+  if (zipModal && zipModal.classList.contains("expanded")) {
+    zipModal.classList.remove("expanded");
+    return true;
+  }
+
+  // 5. Zip viewer
+  const zipViewer = document.getElementById("zip-viewer");
+  if (zipViewer && !zipViewer.classList.contains("hidden")) {
+    if (_closeZipCallback) {
+      _closeZipCallback();
+    }
+    return true;
+  }
+
+  // 6. Post info expanded
+  const expandedInfo = document.querySelector(".post-info.expanded");
+  if (expandedInfo) {
+    closeAllPostInfo();
+    return true;
+  }
+
+  // 7. Feed view
+  if (feedView && feedView.classList.contains("active")) {
+    const wasCreatorFeed = !!state.currentFeedCreatorName;
+    state.currentFeedCreatorName = null;
+    updateNavTabs(null);
+    resetFeed();
+
+    if (wasCreatorFeed) {
+      showView(creatorsView, true);
+    } else {
+      showView(welcomeScreen, false);
+      if (navBack) navBack.classList.add("hidden");
+      if (_resetHomeCallback) _resetHomeCallback();
+    }
+    return true;
+  }
+
+  // 8. Creators view
+  if (creatorsView && creatorsView.classList.contains("active")) {
+    state.currentFeedCreatorName = null;
+    updateNavTabs(null);
+    resetFeed();
+    showView(welcomeScreen, false);
+    if (navBack) navBack.classList.add("hidden");
+    if (_resetHomeCallback) _resetHomeCallback();
+    return true;
+  }
+
+  return false;
+}
+
+export function triggerAppBack() {
+  const now = Date.now();
+  if (now - lastBackTriggerTime < 200) {
+    return;
+  }
+  lastBackTriggerTime = now;
+
+  if (hasHistoryCushion) {
+    hasHistoryCushion = false;
+    window.history.back();
+  } else {
+    executeAppBack();
+  }
+}
+
+export function initNavigationHistory() {
+  try {
+    if (window.history.state && window.history.state.pawCushion) {
+      window.history.replaceState(null, "");
+    }
+  } catch (_) {}
+
+  window.addEventListener("popstate", () => {
+    if (isPoppingForHome) {
+      isPoppingForHome = false;
+      hasHistoryCushion = false;
+      return;
+    }
+
+    hasHistoryCushion = false;
+
+    const handled = executeAppBack();
+    if (handled && !isAtRootView()) {
+      ensureHistoryCushion();
+    }
+  });
+
+  window.addEventListener("pointerdown", (e) => {
+    if (e.button === 3) {
+      e.preventDefault();
+    }
+  });
+
+  window.addEventListener("mouseup", (e) => {
+    if (e.button === 3) {
+      e.preventDefault();
+      triggerAppBack();
+    }
+  });
+
+  window.addEventListener("auxclick", (e) => {
+    if (e.button === 3) {
+      e.preventDefault();
+      triggerAppBack();
+    }
+  });
 }

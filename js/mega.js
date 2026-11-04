@@ -3,8 +3,9 @@ import { zipViewer, zipTitle, zipContent, zipIndicator, setZipNavVisible, render
 import { formatBytes, showMediaUnavailableWarning, renderArchiveProgress, renderMediaProgress, markMediaLoaded } from "./utils.js";
 import { attachMedia, syncCarouselClones, getCurrentGalleryPost, playbackObserver } from "./feed.js";
 import { createExternalAbortSignal, renderArchiveCardUI, escapeHtml, getMimeType, isImageOrVideo } from "./externalGalleries.js";
-import { attachCustomVideoPlayer } from "./player.js";
+import { attachCustomVideoPlayer, getGlobalVolume, isGlobalUnmuted } from "./player.js";
 import { loadGifPlayer } from "./gifPlayer.js";
+import { ensureHistoryCushion } from "./nav.js";
 
 export const megaFolderCache = new Map();
 export const megaBlobCache = new Map();
@@ -917,6 +918,7 @@ async function batchPrefetchMegaDlUrls(files, folderId, signal) {
 }
 
 export async function openMegaGallery(megaUrl, galleryTitle, post = null) {
+  ensureHistoryCushion();
   if (post) {
     state.currentGalleryPost = post;
   } else if (!state.currentGalleryPost) {
@@ -1242,7 +1244,16 @@ async function handleSingleMegaFile(parsed, title, signal) {
     video.setAttribute("playsinline", "");
     video.setAttribute("webkit-playsinline", "");
     video.loop = true;
-    video.muted = true;
+    const isUnmuted = isGlobalUnmuted();
+    const savedVol = getGlobalVolume();
+    video.volume = savedVol;
+    video.muted = !isUnmuted;
+    video.defaultMuted = !isUnmuted;
+    if (isUnmuted) {
+      video.removeAttribute("muted");
+    } else {
+      video.setAttribute("muted", "");
+    }
     video.style.maxWidth = "100%";
     video.style.maxHeight = "100%";
     video.style.objectFit = "contain";
@@ -1371,7 +1382,16 @@ async function loadAndDisplayMegaItem(container, file, folderId, cachedBlobs, si
           vid.setAttribute("playsinline", "");
           vid.setAttribute("webkit-playsinline", "");
           vid.loop = true;
-          vid.muted = true;
+          const isUnmuted = isGlobalUnmuted();
+          const savedVol = getGlobalVolume();
+          vid.volume = savedVol;
+          vid.muted = !isUnmuted;
+          vid.defaultMuted = !isUnmuted;
+          if (isUnmuted) {
+            vid.removeAttribute("muted");
+          } else {
+            vid.setAttribute("muted", "");
+          }
           vid.style.maxWidth = "100%";
           vid.style.maxHeight = "100%";
           vid.style.objectFit = "contain";

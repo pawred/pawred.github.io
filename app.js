@@ -18,7 +18,14 @@ import {
   updateSiteSpecificUI,
   updateNavTabs,
   updateSourceSwitcher,
-  showView
+  showView,
+  triggerAppBack,
+  ensureHistoryCushion,
+  releaseHistoryCushion,
+  isAtRootView,
+  setResetHomeCallback,
+  setCloseZipCallback,
+  initNavigationHistory
 } from './js/nav.js';
 import {
   creatorsList,
@@ -415,8 +422,11 @@ if (navInfo) {
       if (card) {
         const info = card.querySelector('.post-info');
         if (info) {
+          const willOpen = !info.classList.contains('expanded');
           info.classList.toggle('expanded');
           updateNavVisibility();
+          if (willOpen) ensureHistoryCushion();
+          else if (isAtRootView()) releaseHistoryCushion();
         }
       }
     }
@@ -431,8 +441,11 @@ if (navBlacklist && blacklistMenu) {
     if (blacklistMenuTags) blacklistMenuTags.value = getE621Blacklist();
     if (blacklistMenuEnable) blacklistMenuEnable.checked = isE621BlacklistEnabled();
     if (btnBlacklistMenuSync) btnBlacklistMenuSync.style.display = state.currentSite === 'e621' ? '' : 'none';
+    const willOpen = !blacklistMenu.classList.contains('active');
     blacklistMenu.classList.toggle('active');
     updateNavVisibility();
+    if (willOpen) ensureHistoryCushion();
+    else if (isAtRootView()) releaseHistoryCushion();
   });
 }
 
@@ -441,17 +454,30 @@ if (navSettings && settingsMenu) {
     e.stopPropagation();
     if (!isNavInteractive()) return;
     if (blacklistMenu) blacklistMenu.classList.remove('active');
+    const willOpen = !settingsMenu.classList.contains('active');
     settingsMenu.classList.toggle('active');
     updateNavVisibility();
+    if (willOpen) ensureHistoryCushion();
+    else if (isAtRootView()) releaseHistoryCushion();
   });
   
   document.addEventListener('click', (e) => {
     const isZipSettings = document.getElementById('zip-settings-viewer') && e.target === document.getElementById('zip-settings-viewer');
+    let closedAny = false;
     if (!settingsMenu.contains(e.target) && e.target !== navSettings && !isZipSettings) {
-      settingsMenu.classList.remove('active');
+      if (settingsMenu.classList.contains('active')) {
+        settingsMenu.classList.remove('active');
+        closedAny = true;
+      }
     }
     if (blacklistMenu && !blacklistMenu.contains(e.target) && (!navBlacklist || !navBlacklist.contains(e.target))) {
-      blacklistMenu.classList.remove('active');
+      if (blacklistMenu.classList.contains('active')) {
+        blacklistMenu.classList.remove('active');
+        closedAny = true;
+      }
+    }
+    if (closedAny && isAtRootView()) {
+      releaseHistoryCushion();
     }
   });
 }
@@ -537,6 +563,7 @@ if (navHome) {
   navHome.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!isNavInteractive()) return;
+    releaseHistoryCushion();
     state.navManualVisible = false;
     state.currentFeedCreatorName = null;
     updateNavTabs(null);
@@ -552,27 +579,7 @@ if (navBack) {
   navBack.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!isNavInteractive()) return;
-    
-    if (feedView && feedView.classList.contains('active')) {
-      const wasCreatorFeed = !!state.currentFeedCreatorName;
-      
-      state.currentFeedCreatorName = null;
-      updateNavTabs(null);
-      resetFeed();
-      
-      if (wasCreatorFeed) {
-        showView(creatorsView, true);
-      } else {
-        showView(welcomeScreen, false);
-        navBack.classList.add('hidden');
-        resetHomeState();
-      }
-    } 
-    else if (creatorsView && creatorsView.classList.contains('active')) {
-      showView(welcomeScreen, false);
-      navBack.classList.add('hidden');
-      resetHomeState();
-    }
+    triggerAppBack();
   });
 }
 
@@ -754,7 +761,7 @@ if (closeZipViewer) {
   closeZipViewer.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!isZipNavInteractive()) return;
-    closeZipGallery();
+    triggerAppBack();
   });
 }
 
@@ -762,7 +769,9 @@ if (zipSettingsViewer && settingsMenu) {
   zipSettingsViewer.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!isZipNavInteractive()) return;
+    const willOpen = !settingsMenu.classList.contains('active');
     settingsMenu.classList.toggle('active');
+    if (willOpen) ensureHistoryCushion();
   });
 }
 
@@ -770,6 +779,7 @@ if (zipHomeViewer) {
   zipHomeViewer.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!isZipNavInteractive()) return;
+    releaseHistoryCushion();
     closeZipGallery();
     state.currentFeedCreatorName = null;
     updateNavTabs(null);
@@ -777,6 +787,7 @@ if (zipHomeViewer) {
     if (navBack) navBack.classList.add('hidden');
     
     resetFeed();
+    resetHomeState();
   });
 }
 
@@ -791,7 +802,7 @@ if (zipInfoViewer) {
 if (closeZipFileInfo) {
   closeZipFileInfo.addEventListener('click', (e) => {
     e.stopPropagation();
-    toggleZipFileInfoModal(false);
+    triggerAppBack();
   });
 }
 
@@ -1036,3 +1047,7 @@ if (zipContent) {
 
 initGestures();
 initEdgeVisualizer();
+
+setResetHomeCallback(resetHomeState);
+setCloseZipCallback(closeZipGallery);
+initNavigationHistory();

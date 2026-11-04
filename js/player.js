@@ -14,12 +14,108 @@ function formatTime(seconds) {
   return `${remM}:${remS < 10 ? "0" : ""}${remS}`;
 }
 
+export function getGlobalVolume() {
+  const saved = localStorage.getItem("paw_video_volume");
+  if (saved !== null) {
+    const v = parseFloat(saved);
+    if (!isNaN(v) && isFinite(v)) return Math.max(0, Math.min(1, v));
+  }
+  return 1.0;
+}
+
+export function isGlobalUnmuted() {
+  return localStorage.getItem("paw_video_unmuted") === "true";
+}
+
+let lastNonZeroGlobalVolume = (() => {
+  const v = getGlobalVolume();
+  return v > 0 ? v : 1.0;
+})();
+
+export function getGlobalLastNonZeroVolume() {
+  if (lastNonZeroGlobalVolume > 0) return lastNonZeroGlobalVolume;
+  const v = getGlobalVolume();
+  if (v > 0) {
+    lastNonZeroGlobalVolume = v;
+    return v;
+  }
+  return 1.0;
+}
+
+export function setGlobalVolume(volume, unmuted = null) {
+  const clamped = Math.max(0, Math.min(1, volume));
+  if (clamped > 0) {
+    lastNonZeroGlobalVolume = clamped;
+  }
+  localStorage.setItem("paw_video_volume", String(clamped));
+
+  let finalUnmuted;
+  if (unmuted !== null) {
+    finalUnmuted = Boolean(unmuted);
+  } else {
+    finalUnmuted = clamped > 0 ? isGlobalUnmuted() : false;
+  }
+  localStorage.setItem("paw_video_unmuted", finalUnmuted ? "true" : "false");
+
+  document.dispatchEvent(new CustomEvent("paw:syncvolume", {
+    detail: {
+      volume: clamped,
+      unmuted: finalUnmuted,
+      lastNonZeroVolume: lastNonZeroGlobalVolume
+    }
+  }));
+}
+
+export function setGlobalMute(muted) {
+  const isMuted = Boolean(muted);
+  localStorage.setItem("paw_video_unmuted", isMuted ? "false" : "true");
+
+  let targetVol = getGlobalVolume();
+  if (!isMuted && targetVol === 0) {
+    targetVol = getGlobalLastNonZeroVolume();
+    localStorage.setItem("paw_video_volume", String(targetVol));
+  }
+
+  document.dispatchEvent(new CustomEvent("paw:syncvolume", {
+    detail: {
+      volume: targetVol,
+      unmuted: !isMuted,
+      lastNonZeroVolume: lastNonZeroGlobalVolume
+    }
+  }));
+}
+
+window.addEventListener("storage", (e) => {
+  if (e.key === "paw_video_volume" || e.key === "paw_video_unmuted") {
+    const vol = getGlobalVolume();
+    const unmuted = isGlobalUnmuted();
+    if (vol > 0) lastNonZeroGlobalVolume = vol;
+    document.dispatchEvent(new CustomEvent("paw:syncvolume", {
+      detail: {
+        volume: vol,
+        unmuted: unmuted,
+        lastNonZeroVolume: lastNonZeroGlobalVolume
+      }
+    }));
+  }
+});
+
 export function attachCustomVideoPlayer(video, container) {
   if (!video || !container) return;
-  if (container.querySelector(".custom-player-overlay")) return;
+  if (video._customPlayerAttached) return;
 
+  const existingOverlay = (video.closest(".video-player-wrapper") || container).querySelector(".custom-player-overlay");
+  if (existingOverlay) return;
+
+  video._customPlayerAttached = true;
   video.controls = false;
   video.removeAttribute("controls");
+  video.playsInline = true;
+  video.setAttribute("playsinline", "");
+  video.setAttribute("webkit-playsinline", "");
+  video.setAttribute("controlsList", "nodownload nofullscreen noremoteplayback noplaybackrate");
+  video.setAttribute("disablePictureInPicture", "true");
+  video.setAttribute("disableRemotePlayback", "true");
   if (video.removeAttribute) {
     video.removeAttribute("crossorigin");
   }
@@ -41,6 +137,9 @@ export function attachCustomVideoPlayer(video, container) {
     createdWrapper = true;
   }
 
+  // Ensure no duplicate overlays exist in this wrapper
+  wrapper.querySelectorAll(".custom-player-overlay").forEach((el) => el.remove());
+
   const overlay = document.createElement("div");
   overlay.className = "custom-player-overlay";
 
@@ -51,13 +150,13 @@ export function attachCustomVideoPlayer(video, container) {
     <div class="player-skip-indicator skip-left">
       <div class="player-skip-pill">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="#ffffff"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z" fill="#ffffff"/></svg>
-        <span class="player-skip-text">-5s</span>
+        <span class="player-skip-text">-10s</span>
       </div>
     </div>
 
     <div class="player-skip-indicator skip-right">
       <div class="player-skip-pill">
-        <span class="player-skip-text">+5s</span>
+        <span class="player-skip-text">+10s</span>
         <svg viewBox="0 0 24 24" width="20" height="20" fill="#ffffff"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z" fill="#ffffff"/></svg>
       </div>
     </div>
@@ -197,21 +296,17 @@ export function attachCustomVideoPlayer(video, container) {
   let skipResetTimer = null;
   let isScrubbing = false;
   let isVolumeScrubbing = false;
-  const savedUnmuted = localStorage.getItem('paw_video_unmuted') === 'true';
-  const savedVolume = parseFloat(localStorage.getItem('paw_video_volume') || '1');
-  let lastNonZeroVolume = savedVolume > 0 ? savedVolume : 1;
 
   if (!isGif) {
-    if (savedUnmuted) {
-      video.muted = false;
-      video.defaultMuted = false;
+    const currentGlobalVol = getGlobalVolume();
+    const currentGlobalUnmuted = isGlobalUnmuted();
+    video.volume = currentGlobalVol;
+    video.muted = !currentGlobalUnmuted;
+    video.defaultMuted = !currentGlobalUnmuted;
+    if (currentGlobalUnmuted) {
       video.removeAttribute("muted");
-      video.volume = lastNonZeroVolume;
     } else {
-      video.muted = true;
-      video.defaultMuted = true;
       video.setAttribute("muted", "");
-      video.volume = lastNonZeroVolume;
     }
   }
 
@@ -355,15 +450,16 @@ export function attachCustomVideoPlayer(video, container) {
   function updateMuteState() {
     if (isGif) return;
     const isMuted = video.muted || video.volume === 0;
-    const currentVol = isMuted ? 0 : video.volume;
+    const currentVol = video.volume;
 
     if (isMuted) {
       volHighIcon.style.display = "none";
       volLowIcon.style.display = "none";
       volMutedIcon.style.display = "";
-      volumeGroup.classList.remove("expanded");
+      volumeGroup.classList.add("is-muted");
     } else {
       volMutedIcon.style.display = "none";
+      volumeGroup.classList.remove("is-muted");
       if (currentVol >= 0.5) {
         volHighIcon.style.display = "";
         volLowIcon.style.display = "none";
@@ -371,47 +467,62 @@ export function attachCustomVideoPlayer(video, container) {
         volHighIcon.style.display = "none";
         volLowIcon.style.display = "";
       }
-      volumeGroup.classList.add("expanded");
     }
 
-    const pct = Math.round(currentVol * 100);
+    const displayVol = currentVol > 0 ? currentVol : getGlobalLastNonZeroVolume();
+    const pct = Math.round(displayVol * 100);
     volumeFill.style.width = `${pct}%`;
     volumeThumb.style.left = `${pct}%`;
   }
 
+  let volumeCollapseTimer = null;
+
   function toggleMute() {
-    if (video.muted || video.volume === 0) {
-      video.muted = false;
-      video.volume = lastNonZeroVolume > 0 ? lastNonZeroVolume : 1;
-      localStorage.setItem('paw_video_unmuted', 'true');
-      localStorage.setItem('paw_video_volume', String(video.volume));
+    if (isGif) return;
+    const isMuted = video.muted || video.volume === 0;
+    if (isMuted) {
+      setGlobalMute(false);
       volumeGroup.classList.add("expanded");
+      clearTimeout(volumeCollapseTimer);
+      volumeCollapseTimer = setTimeout(() => {
+        if (!isVolumeScrubbing && !volumeGroup.matches(":hover")) {
+          volumeGroup.classList.remove("expanded");
+        }
+      }, 2500);
     } else {
-      lastNonZeroVolume = video.volume > 0 ? video.volume : 1;
-      video.muted = true;
-      localStorage.setItem('paw_video_unmuted', 'false');
+      setGlobalMute(true);
       volumeGroup.classList.remove("expanded");
+      clearTimeout(volumeCollapseTimer);
     }
-    updateMuteState();
   }
 
   function setVolumeFromEvent(e) {
+    if (isGif) return;
+    clearTimeout(volumeCollapseTimer);
     const rect = volumeSlider.getBoundingClientRect();
     const clientX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    video.volume = pct;
-    if (pct === 0) {
-      video.muted = true;
-      localStorage.setItem('paw_video_unmuted', 'false');
-    } else {
-      video.muted = false;
-      lastNonZeroVolume = pct;
-      localStorage.setItem('paw_video_unmuted', 'true');
-      localStorage.setItem('paw_video_volume', String(pct));
-    }
-    updateMuteState();
+    setGlobalVolume(pct, pct > 0);
     resetAutoHide();
   }
+
+  let volumeHoverTimer = null;
+
+  volumeGroup.addEventListener("mouseenter", () => {
+    clearTimeout(volumeHoverTimer);
+    clearTimeout(volumeCollapseTimer);
+    volumeGroup.classList.add("expanded");
+  });
+
+  volumeGroup.addEventListener("mouseleave", () => {
+    if (isVolumeScrubbing) return;
+    clearTimeout(volumeHoverTimer);
+    volumeHoverTimer = setTimeout(() => {
+      if (!isVolumeScrubbing) {
+        volumeGroup.classList.remove("expanded");
+      }
+    }, 350);
+  });
 
   volumeSliderWrap.addEventListener("mousedown", (e) => {
     e.stopPropagation();
@@ -429,6 +540,12 @@ export function attachCustomVideoPlayer(video, container) {
       volumeSliderWrap.classList.remove("scrubbing");
       window.removeEventListener("mousemove", onVolMove);
       window.removeEventListener("mouseup", onVolUp);
+      clearTimeout(volumeHoverTimer);
+      volumeHoverTimer = setTimeout(() => {
+        if (!volumeGroup.matches(":hover")) {
+          volumeGroup.classList.remove("expanded");
+        }
+      }, 500);
       resetAutoHide();
     };
 
@@ -455,6 +572,10 @@ export function attachCustomVideoPlayer(video, container) {
     e.stopPropagation();
     isVolumeScrubbing = false;
     volumeSliderWrap.classList.remove("scrubbing");
+    clearTimeout(volumeCollapseTimer);
+    volumeCollapseTimer = setTimeout(() => {
+      volumeGroup.classList.remove("expanded");
+    }, 2000);
     resetAutoHide();
   };
   volumeSliderWrap.addEventListener("touchend", endVolumeScrub);
@@ -598,14 +719,26 @@ export function attachCustomVideoPlayer(video, container) {
   timeline.addEventListener("touchend", endTimelineScrub);
   timeline.addEventListener("touchcancel", endTimelineScrub);
 
+  let skipFeedbackTimer = null;
+
   function showSkipFeedback(side, seconds) {
     const indicator = side === "left" ? skipLeft : skipRight;
+    const otherIndicator = side === "left" ? skipRight : skipLeft;
     const textEl = side === "left" ? skipLeftText : skipRightText;
-    textEl.textContent = side === "left" ? `-${seconds}s` : `+${seconds}s`;
+    if (textEl) {
+      textEl.textContent = side === "left" ? `-${seconds}s` : `+${seconds}s`;
+    }
+
+    otherIndicator.classList.remove("active");
+    clearTimeout(skipFeedbackTimer);
 
     indicator.classList.remove("active");
     void indicator.offsetWidth;
     indicator.classList.add("active");
+
+    skipFeedbackTimer = setTimeout(() => {
+      indicator.classList.remove("active");
+    }, 800);
   }
 
   function skipTime(seconds) {
@@ -691,19 +824,15 @@ export function attachCustomVideoPlayer(video, container) {
         singleTapTimer = null;
       }
 
-      accumulatedSkip += 5;
+      accumulatedSkip += 10;
       clearTimeout(skipResetTimer);
       skipResetTimer = setTimeout(() => {
         accumulatedSkip = 0;
       }, 800);
 
-      if (side === "left") {
-        skipTime(-5);
-        showSkipFeedback("left", accumulatedSkip);
-      } else {
-        skipTime(5);
-        showSkipFeedback("right", accumulatedSkip);
-      }
+      const skipDelta = side === "left" ? -10 : 10;
+      skipTime(skipDelta);
+      showSkipFeedback(side, accumulatedSkip);
 
       lastTapTime = now;
       return;
@@ -723,7 +852,7 @@ export function attachCustomVideoPlayer(video, container) {
 
     lastTapTime = now;
     lastTapSide = side;
-    accumulatedSkip = 5;
+    accumulatedSkip = 0;
 
     clearTimeout(singleTapTimer);
     singleTapTimer = setTimeout(() => {
@@ -925,7 +1054,40 @@ export function attachCustomVideoPlayer(video, container) {
     hideBuffering();
     updatePlayState();
   });
-  video.addEventListener("volumechange", updateMuteState);
+  let isInternalVolumeChange = false;
+
+  const onSyncVolume = (e) => {
+    if (isGif) return;
+    const { volume, unmuted } = e.detail;
+    isInternalVolumeChange = true;
+    try {
+      video.volume = volume;
+      video.muted = !unmuted;
+      video.defaultMuted = !unmuted;
+      if (unmuted) {
+        video.removeAttribute("muted");
+      } else {
+        video.setAttribute("muted", "");
+      }
+    } finally {
+      isInternalVolumeChange = false;
+    }
+    updateMuteState();
+  };
+  document.addEventListener("paw:syncvolume", onSyncVolume);
+
+  video.addEventListener("volumechange", () => {
+    if (!isInternalVolumeChange && !isGif) {
+      const currentVol = video.volume;
+      const isMuted = video.muted;
+      const savedVol = getGlobalVolume();
+      const savedMuted = !isGlobalUnmuted();
+      if (Math.abs(currentVol - savedVol) > 0.01 || isMuted !== savedMuted) {
+        setGlobalVolume(currentVol, !isMuted);
+      }
+    }
+    updateMuteState();
+  });
 
   video.addEventListener("waiting", () => {
     userWantsPlayback = true;
@@ -1098,12 +1260,16 @@ export function attachCustomVideoPlayer(video, container) {
     video.removeEventListener("webkitbeginfullscreen", updateFsIcon);
     video.removeEventListener("webkitendfullscreen", updateFsIcon);
     document.removeEventListener("paw:navhidden", onGlobalNavHidden);
+    document.removeEventListener("paw:syncvolume", onSyncVolume);
     window.removeEventListener("resize", updateVideoDimensions);
     if (resizeObserver) resizeObserver.disconnect();
     container.removeEventListener("click", onContainerClick);
     clearTimeout(autoHideTimer);
     clearTimeout(singleTapTimer);
     clearTimeout(skipResetTimer);
+    clearTimeout(skipFeedbackTimer);
+    clearTimeout(volumeCollapseTimer);
+    clearTimeout(volumeHoverTimer);
     overlay.remove();
 
     if (createdWrapper && wrapper.parentNode) {

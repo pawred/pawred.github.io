@@ -1,9 +1,9 @@
 import { state } from "./state.js";
 import { formatBytes, showMediaUnavailableWarning, renderArchiveProgress, renderMediaProgress, markMediaLoaded, escapeHtml } from "./utils.js";
-import { showView, welcomeScreen, navBack, updateNavTabs, wrapCarousel, settingsMenu } from "./nav.js";
+import { showView, welcomeScreen, navBack, updateNavTabs, wrapCarousel, settingsMenu, ensureHistoryCushion } from "./nav.js";
 import { handleCarouselScrollSettled, smoothScroll, navigateCarousel, getCarouselMetrics, getCurrentGalleryPost, playbackObserver } from "./feed.js";
 import { abortExternalGallery, getMimeType } from "./externalGalleries.js";
-import { attachCustomVideoPlayer } from "./player.js";
+import { attachCustomVideoPlayer, getGlobalVolume, isGlobalUnmuted } from "./player.js";
 import { loadGifPlayer } from "./gifPlayer.js";
 import { cancelDropboxQueuedTask, clearDropboxMediaQueue } from "./dropbox.js";
 
@@ -853,6 +853,7 @@ export function toggleZipFileInfoModal(force) {
     const active = getActiveMediaItem();
     updateActiveSlideInfo(active?.item);
     modal.classList.add("expanded");
+    ensureHistoryCushion();
   } else {
     modal.classList.remove("expanded");
   }
@@ -1448,6 +1449,7 @@ export function render2DMatrixGallery(folderGroups, options = {}) {
 
 export async function openZipGallery(zipUrl, filename, cachedBlob = null, post = null) {
   closeZipGallery();
+  ensureHistoryCushion();
   if (post) {
     state.currentGalleryPost = post;
   } else if (!state.currentGalleryPost) {
@@ -1643,6 +1645,16 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                 if (media.tagName.toLowerCase() === "video") {
                   if (container.dataset.isClone !== "true") {
                     const cloneVid = media.cloneNode(true);
+                    const isUnmuted = isGlobalUnmuted();
+                    const savedVol = getGlobalVolume();
+                    cloneVid.volume = savedVol;
+                    cloneVid.muted = !isUnmuted;
+                    cloneVid.defaultMuted = !isUnmuted;
+                    if (isUnmuted) {
+                      cloneVid.removeAttribute("muted");
+                    } else {
+                      cloneVid.setAttribute("muted", "");
+                    }
                     container.appendChild(cloneVid);
                     attachCustomVideoPlayer(cloneVid, container);
                     if (playbackObserver) playbackObserver.observe(cloneVid);
@@ -1727,8 +1739,16 @@ export async function openZipGallery(zipUrl, filename, cachedBlob = null, post =
                   video.setAttribute("playsinline", "");
                   video.setAttribute("webkit-playsinline", "");
                   video.loop = true;
-                  video.muted = true;
-                  video.defaultMuted = true;
+                  const isUnmuted = isGlobalUnmuted();
+                  const savedVol = getGlobalVolume();
+                  video.volume = savedVol;
+                  video.muted = !isUnmuted;
+                  video.defaultMuted = !isUnmuted;
+                  if (isUnmuted) {
+                    video.removeAttribute("muted");
+                  } else {
+                    video.setAttribute("muted", "");
+                  }
                   video.disableRemotePlayback = true;
                   video.style.maxWidth = "100%";
                   video.style.maxHeight = "100%";

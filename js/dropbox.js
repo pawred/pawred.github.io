@@ -3,8 +3,9 @@ import { zipViewer, zipTitle, zipContent, zipIndicator, setZipNavVisible, closeZ
 import { formatBytes, showMediaUnavailableWarning, renderMediaProgress, renderArchiveProgress, markMediaLoaded } from "./utils.js";
 import { syncCarouselClones, playbackObserver, getCurrentGalleryPost } from "./feed.js";
 import { createExternalAbortSignal, renderArchiveCardUI, escapeHtml, isImageOrVideo } from "./externalGalleries.js";
-import { attachCustomVideoPlayer } from "./player.js";
+import { attachCustomVideoPlayer, getGlobalVolume, isGlobalUnmuted } from "./player.js";
 import { loadGifPlayer } from "./gifPlayer.js";
+import { ensureHistoryCushion } from "./nav.js";
 
 export const dropboxFolderCache = new Map();
 const dropboxInFlight = new Map();
@@ -343,11 +344,19 @@ export function handleDropboxFileCard(item, url, postTitle, filename, progressOv
       video.className = "post-media";
       video.src = directUrl;
       video.loop = true;
-      video.muted = true;
+      const isUnmuted = isGlobalUnmuted();
+      const savedVol = getGlobalVolume();
+      video.volume = savedVol;
+      video.muted = !isUnmuted;
+      video.defaultMuted = !isUnmuted;
+      if (isUnmuted) {
+        video.removeAttribute("muted");
+      } else {
+        video.setAttribute("muted", "");
+      }
       video.playsInline = true;
       video.setAttribute("playsinline", "");
       video.setAttribute("webkit-playsinline", "");
-      video.setAttribute("muted", "");
       video.preload = "metadata";
       video.controls = false;
       video.addEventListener("canplay", () => {
@@ -471,11 +480,19 @@ export async function handleDropboxFolderEmbed(item, url, progressOverlay, postT
         video.className = "post-media";
         video.src = streamUrl;
         video.loop = true;
-        video.muted = true;
+        const isUnmuted = isGlobalUnmuted();
+        const savedVol = getGlobalVolume();
+        video.volume = savedVol;
+        video.muted = !isUnmuted;
+        video.defaultMuted = !isUnmuted;
+        if (isUnmuted) {
+          video.removeAttribute("muted");
+        } else {
+          video.setAttribute("muted", "");
+        }
         video.playsInline = true;
         video.setAttribute("playsinline", "");
         video.setAttribute("webkit-playsinline", "");
-        video.setAttribute("muted", "");
         video.preload = "metadata";
         video.controls = false;
         video.addEventListener("canplay", () => {
@@ -971,6 +988,7 @@ export async function crawlAllDropboxFolders(rootUrl, rootName, initialEntries, 
  * Opens a Dropbox share link in the fullscreen gallery viewer.
  */
 export async function openDropboxGallery(dropboxUrl, galleryTitle, folderStack = [], post = null) {
+  ensureHistoryCushion();
   if (post) {
     state.currentGalleryPost = post;
   } else if (!state.currentGalleryPost) {
@@ -1074,7 +1092,16 @@ export async function openDropboxGallery(dropboxUrl, galleryTitle, folderStack =
       video.setAttribute("playsinline", "");
       video.setAttribute("webkit-playsinline", "");
       video.loop = true;
-      video.muted = true;
+      const isUnmuted = isGlobalUnmuted();
+      const savedVol = getGlobalVolume();
+      video.volume = savedVol;
+      video.muted = !isUnmuted;
+      video.defaultMuted = !isUnmuted;
+      if (isUnmuted) {
+        video.removeAttribute("muted");
+      } else {
+        video.setAttribute("muted", "");
+      }
       video.style.maxWidth = "100%";
       video.style.maxHeight = "100%";
       video.style.objectFit = "contain";
@@ -1833,7 +1860,16 @@ function loadAndDisplayDropboxItem(container, file, signal) {
           video.setAttribute("playsinline", "");
           video.setAttribute("webkit-playsinline", "");
           video.loop = true;
-          video.muted = true;
+          const isUnmuted = isGlobalUnmuted();
+          const savedVol = getGlobalVolume();
+          video.volume = savedVol;
+          video.muted = !isUnmuted;
+          video.defaultMuted = !isUnmuted;
+          if (isUnmuted) {
+            video.removeAttribute("muted");
+          } else {
+            video.setAttribute("muted", "");
+          }
           video.style.maxWidth = "100%";
           video.style.maxHeight = "100%";
           video.style.objectFit = "contain";

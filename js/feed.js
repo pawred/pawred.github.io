@@ -17,7 +17,7 @@ import {
 import { updateNavTabs, updateNavVisibility, closeAllPostInfo, wrapCarousel } from "./nav.js";
 import { openZipGallery } from "./zip.js";
 import { detectExternalGalleries, renderExternalFileCard, isDropboxFolderUrl, escapeHtml } from "./externalGalleries.js";
-import { attachCustomVideoPlayer } from "./player.js";
+import { attachCustomVideoPlayer, getGlobalVolume, isGlobalUnmuted } from "./player.js";
 import { loadGifPlayer } from "./gifPlayer.js";
 import {
   getE621Headers,
@@ -345,6 +345,7 @@ export function detachMedia(item, force = false) {
   delete item.dataset.loaded;
   delete item.dataset.loading;
   delete item.dataset.failed;
+  item._isLoadingMedia = false;
   item.classList.remove("media-loaded");
   item.classList.remove("media-has-preview");
 }
@@ -443,6 +444,9 @@ export async function loadMediaWithProgress(item) {
     return;
   }
 
+  if (item._isLoadingMedia) return;
+  item._isLoadingMedia = true;
+
   const url = item.dataset.url;
   const type = item.dataset.type;
   item._isDetached = false;
@@ -454,7 +458,7 @@ export async function loadMediaWithProgress(item) {
     delete item._triedDirectFallback;
     deadMediaCache.delete(url);
     detachMedia(item, true);
-    item.dataset.loaded = "true";
+    item._isLoadingMedia = false;
     loadMediaWithProgress(item);
   };
 
@@ -856,33 +860,41 @@ export async function loadMediaWithProgress(item) {
     };
 
     renderMediaProgress(progressOverlay, "Loading...", null, filename, "", totalSize > 0 ? formatBytes(totalSize) : "");
+    // Clean up any stale video or wrapper elements in item to prevent duplicates
+    item.querySelectorAll("video, audio, .video-player-wrapper").forEach((el) => {
+      if (typeof el.pause === "function") el.pause();
+      el.remove();
+    });
     const video = document.createElement(type === "video" ? "video" : "audio");
     video.className = "post-media";
     
     if (type === "video") {
       video.loop = true;
-      const isUnmuted = localStorage.getItem('paw_video_unmuted') === 'true';
-      const savedVol = parseFloat(localStorage.getItem('paw_video_volume') || '1');
+      const isUnmuted = isGlobalUnmuted();
+      const savedVol = getGlobalVolume();
+      video.volume = savedVol;
+      video.muted = !isUnmuted;
+      video.defaultMuted = !isUnmuted;
       if (isUnmuted) {
-        video.muted = false;
-        video.defaultMuted = false;
-        video.volume = savedVol > 0 ? savedVol : 1;
+        video.removeAttribute("muted");
       } else {
-        video.muted = true;
-        video.defaultMuted = true;
         video.setAttribute("muted", "");
       }
       video.playsInline = true;
       video.setAttribute("playsinline", "");
       video.setAttribute("webkit-playsinline", "");
-      video.disableRemotePlayback = true;
+      video.setAttribute("controlsList", "nodownload nofullscreen noremoteplayback noplaybackrate");
+      video.setAttribute("disablePictureInPicture", "true");
+      video.setAttribute("disableRemotePlayback", "true");
       video.preload = "auto";
       video.controls = false;
+      video.removeAttribute("controls");
     } else {
       video.controls = true;
     }
 
     const hideOverlay = () => {
+      item._isLoadingMedia = false;
       markMediaLoaded(item, filename);
       if (progressOverlay) progressOverlay.style.display = "none";
     };
@@ -1183,11 +1195,19 @@ export function attachMedia(item, blob, type) {
     video.src = objUrl;
     if (type === "video") {
       video.loop = true;
-      video.muted = true;
+      const isUnmuted = isGlobalUnmuted();
+      const savedVol = getGlobalVolume();
+      video.volume = savedVol;
+      video.muted = !isUnmuted;
+      video.defaultMuted = !isUnmuted;
+      if (isUnmuted) {
+        video.removeAttribute("muted");
+      } else {
+        video.setAttribute("muted", "");
+      }
       video.playsInline = true;
       video.setAttribute("playsinline", "");
       video.setAttribute("webkit-playsinline", "");
-      video.setAttribute("muted", "");
       video.controls = false;
       item.appendChild(video);
       attachCustomVideoPlayer(video, item);

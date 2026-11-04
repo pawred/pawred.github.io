@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { closeAllPostInfo, feedView, creatorsView, welcomeScreen, showView, updateNavTabs } from "./nav.js";
+import { closeAllPostInfo, feedView, creatorsView, welcomeScreen, showView, updateNavTabs, triggerAppBack } from "./nav.js";
 import { feed, navigateCarousel, recycleOffscreenCards, resetFeed, getCarouselMetrics } from "./feed.js";
 import { zipViewer, zipContent, setZipNavVisible, closeZipGallery, getActiveMediaItem, toggleZipFileInfoModal, navigateFolder } from "./zip.js";
 
@@ -129,57 +129,10 @@ export function initGestures() {
     const tag = e.target.tagName ? e.target.tagName.toLowerCase() : "";
     if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
 
-    if (e.key === "Escape") {
+    if (e.key === "Escape" || (e.altKey && e.key === "ArrowLeft")) {
       e.preventDefault();
-
-      const settingsMenu = document.getElementById("settings-menu");
-      if (settingsMenu && settingsMenu.classList.contains("active")) {
-        settingsMenu.classList.remove("active");
-        return;
-      }
-
-      if (zipViewer && !zipViewer.classList.contains("hidden")) {
-        const modal = document.getElementById("zip-file-info-modal");
-        if (modal && modal.classList.contains("expanded")) {
-          modal.classList.remove("expanded");
-          return;
-        }
-        closeZipGallery();
-        return;
-      }
-
-      const expandedInfo = document.querySelector(".post-info.expanded");
-      if (expandedInfo) {
-        closeAllPostInfo();
-        return;
-      }
-
-      if (feedView && feedView.classList.contains("active")) {
-        const navBackBtn = document.getElementById("nav-back");
-        const wasCreatorFeed = !!state.currentFeedCreatorName;
-        
-        state.currentFeedCreatorName = null;
-        updateNavTabs(null);
-        resetFeed();
-
-        if (wasCreatorFeed) {
-          showView(creatorsView, true);
-        } else {
-          showView(welcomeScreen, false);
-          if (navBackBtn) navBackBtn.classList.add("hidden");
-        }
-        return;
-      }
-
-      if (creatorsView && creatorsView.classList.contains("active")) {
-        state.currentFeedCreatorName = null;
-        updateNavTabs(null);
-        resetFeed();
-        showView(welcomeScreen, false);
-        const navBackBtn = document.getElementById("nav-back");
-        if (navBackBtn) navBackBtn.classList.add("hidden");
-        return;
-      }
+      triggerAppBack();
+      return;
     }
 
     const h = window.innerHeight;
@@ -280,12 +233,15 @@ export function initGestures() {
 
   function shouldIgnoreFeedGestures(e) {
     if (
+      (welcomeScreen && welcomeScreen.classList.contains("active")) ||
+      (creatorsView && creatorsView.classList.contains("active")) ||
+      e.target.closest("#welcome-screen") ||
+      e.target.closest("#creators-view") ||
       e.target.closest("#nav") ||
       e.target.closest("#zip-nav") ||
       e.target.closest("#zip-indicator") ||
       e.target.closest("#settings-menu") ||
       e.target.closest(".media-progress") ||
-      e.target.closest("#creators-view") ||
       e.target.closest(".creators-grid") ||
       e.target.closest(".tags-container") ||
       e.target.closest(".zip-info-text") ||
