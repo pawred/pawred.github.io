@@ -14,12 +14,13 @@ export async function fetchWithRetry(url, options = {}, retries = 2) {
     try {
       const res = await fetch(url, options);
       if (res.status === 429 && i < retries) {
+        if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
         continue;
       }
       return res;
     } catch (err) {
-      if (i === retries) throw err;
+      if (err.name === "AbortError" || options?.signal?.aborted || i === retries) throw err;
       await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
     }
   }
@@ -352,4 +353,96 @@ export function renderArchiveProgress(container, status = "Loading...", percent 
     ${titleHtml}
     ${sizeHtml}
   `;
+}
+
+// IndexedDB Storage & Caching Layer
+const DB_NAME = "PawReaderDB";
+const DB_VERSION = 1;
+export const STORE_CACHE = "cache";
+export const STORE_DATA = "data";
+
+let dbPromise = null;
+export function openPawDB() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve) => {
+    if (typeof indexedDB === "undefined") {
+      resolve(null);
+      return;
+    }
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_CACHE)) {
+        db.createObjectStore(STORE_CACHE, { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains(STORE_DATA)) {
+        db.createObjectStore(STORE_DATA, { keyPath: "key" });
+      }
+    };
+    request.onsuccess = (e) => resolve(e.target.result);
+    request.onerror = (e) => {
+      console.warn("IndexedDB open failed:", e);
+      resolve(null);
+    };
+  });
+  return dbPromise;
+}
+
+export async function idbGet(storeName, key) {
+  try {
+    const db = await openPawDB();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      const tx = db.transaction(storeName, "readonly");
+      const store = tx.objectStore(storeName);
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result ? req.result.val : null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+export async function idbSet(storeName, key, val) {
+  try {
+    const db = await openPawDB();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      const tx = db.transaction(storeName, "readwrite");
+      const store = tx.objectStore(storeName);
+      store.put({ key, val, updatedAt: Date.now() });
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+export async function idbGetCached(key, maxAgeMs) {
+  try {
+    const db = await openPawDB();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_CACHE, "readonly");
+      const store = tx.objectStore(STORE_CACHE);
+      const req = store.get(key);
+      req.onsuccess = () => {
+        const res = req.result;
+        if (!res) return resolve(null);
+        if (maxAgeMs && Date.now() - res.updatedAt > maxAgeMs) {
+          return resolve(null);
+        }
+        resolve(res.val);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+export async function idbSetCached(key, val) {
+  return idbSet(STORE_CACHE, key, val);
 }

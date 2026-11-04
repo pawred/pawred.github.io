@@ -1,4 +1,5 @@
 import { PROXY_URL, state } from './js/state.js';
+import { fetchWithRetry } from './js/utils.js';
 import {
   welcomeScreen,
   creatorsView,
@@ -66,7 +67,8 @@ import {
   saveE621Blacklist,
   isE621BlacklistEnabled,
   setE621BlacklistEnabled,
-  fetchE621UserProfile
+  fetchE621UserProfile,
+  initBlacklistStorage
 } from './js/e621Auth.js';
 import { getGelbooruAuth, saveGelbooruAuth } from './js/gelbooruAuth.js';
 import { attachTagAutocomplete } from './js/autocomplete.js';
@@ -99,14 +101,14 @@ function formatWorkerVersion(raw) {
 
 (async function checkWorkerVersion() {
   try {
-    const res = await fetch(`${PROXY_URL}/version`);
-    if (res.ok) {
+    const res = await fetchWithRetry(`${PROXY_URL}/version`, {}, 2);
+    if (res && res.ok) {
       const data = await res.json();
       const rawVersion = (data && data.version) ? data.version : (data && data.id ? data.id : data);
       const version = formatWorkerVersion(rawVersion);
       window.pawWorkerVersion = version;
       console.log(`Worker deployed version: ${version}`);
-    } else {
+    } else if (res) {
       const headerVersion = res.headers.get('X-Worker-Version');
       if (headerVersion) {
         const version = formatWorkerVersion(headerVersion);
@@ -265,6 +267,11 @@ if (blacklistMenuEnable) blacklistMenuEnable.checked = initialBlacklistEnabled;
 
 const initialBlacklistText = getE621Blacklist();
 if (blacklistMenuTags) blacklistMenuTags.value = initialBlacklistText;
+initBlacklistStorage().then(() => {
+  if (blacklistMenuTags && !blacklistMenuTags.value) {
+    blacklistMenuTags.value = getE621Blacklist();
+  }
+});
 
 if (blacklistMenuEnable) {
   blacklistMenuEnable.addEventListener('change', (e) => {
@@ -691,7 +698,7 @@ if (searchInput) {
     searchTimeout = setTimeout(() => {
       state.creatorPage = 1;
       filterAndSortCreators();
-    }, 400);
+    }, 220);
   });
 }
 

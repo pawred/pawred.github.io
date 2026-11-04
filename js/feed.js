@@ -1,4 +1,6 @@
 import { PROXY_URL, state } from "./state.js";
+import { normalizePost, transformE621PostClient } from "./postNormalizer.js";
+export { normalizePost, transformE621PostClient };
 import {
   formatBytes,
   getServiceColor,
@@ -10,6 +12,7 @@ import {
   stopProgress,
   getServiceCreatorUrl,
   getServicePostUrl,
+  fetchWithRetry,
 } from "./utils.js";
 import { updateNavTabs, updateNavVisibility, closeAllPostInfo, wrapCarousel } from "./nav.js";
 import { openZipGallery } from "./zip.js";
@@ -37,7 +40,7 @@ export const playbackObserver = new IntersectionObserver(
       if (tag === "video" || tag === "audio" || isGif) {
         if (!entry.isIntersecting || entry.intersectionRatio < 0.25) {
           el.pause();
-        } else if (isGif && entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+        } else if (isGif && entry.intersectionRatio >= 0.5) {
           if (!el._userPaused && el.paused) {
             el.play().catch(() => {});
           }
@@ -106,14 +109,20 @@ export function syncCarouselClones(item) {
 
   if (!targetClone) return;
 
-  const cloneProgress = targetClone.querySelector(".media-progress");
-  const oldClones = Array.from(targetClone.children).filter((c) => c !== cloneProgress);
-  oldClones.forEach((c) => c.remove());
-
   const img = item.querySelector("img.post-media");
   const video = item.querySelector("video.post-media, audio.post-media");
   const gifCanvas = item.querySelector("canvas.post-media[data-is-gif]");
   const archiveCard = item.querySelector(".ext-archive-card");
+
+  const syncKey = img ? img.src : (item.dataset.path || (video ? video.src : "synced"));
+  if (targetClone.dataset.loaded === "true" && targetClone.dataset.syncKey === syncKey) {
+    return;
+  }
+
+  const cloneProgress = targetClone.querySelector(".media-progress");
+  const oldClones = Array.from(targetClone.children).filter((c) => c !== cloneProgress);
+  oldClones.forEach((c) => c.remove());
+  targetClone.dataset.syncKey = syncKey;
 
   if (img) {
     const cloneImg = img.cloneNode(true);
@@ -257,6 +266,8 @@ export const feedObserver = new IntersectionObserver(
 
 export function detachMedia(item, force = false) {
   if (!item || (!force && !item.dataset.loaded && !item._loadTimer)) return;
+  item._isDetached = true;
+  mediaObserver.unobserve(item);
 
   if (item._loadTimer) {
     clearTimeout(item._loadTimer);
@@ -347,28 +358,62 @@ export function recycleOffscreenCards() {
   const currentCardIndex = Math.round(feed.scrollTop / h);
   const KEEP_WINDOW_IMG = 8;
   const KEEP_WINDOW_VIDEO = 3;
+  const VIRTUALIZE_WINDOW = 15;
 
   cards.forEach((card, idx) => {
-    const isOutOfImgWindow = idx < currentCardIndex - KEEP_WINDOW_IMG || idx > currentCardIndex + KEEP_WINDOW_IMG;
-    const isOutOfVideoWindow = idx < currentCardIndex - KEEP_WINDOW_VIDEO || idx > currentCardIndex + KEEP_WINDOW_VIDEO;
+    const isFarAway = idx < currentCardIndex - VIRTUALIZE_WINDOW || idx > currentCardIndex + VIRTUALIZE_WINDOW;
 
-    if (isOutOfImgWindow) {
+    if (isFarAway) {
+      if (!card._virtualized) {
+        const height = card.offsetHeight;
+        if (height > 50) {
+          card.style.minHeight = `${height}px`;
+          const carousel = card.querySelector(".media-carousel");
+          if (carousel) {
+            card._savedCarouselScroll = carousel.scrollLeft;
+          }
+          const items = card.querySelectorAll(".media-item");
+          items.forEach((item) => detachMedia(item));
+          const frag = document.createDocumentFragment();
+          while (card.firstChild) {
+            frag.appendChild(card.firstChild);
+          }
+          card._savedDOM = frag;
+          card._virtualized = true;
+          card.classList.add("virtualized-card");
+        }
+      }
+      return;
+    }
+
+    if (card._virtualized && card._savedDOM) {
+      card.appendChild(card._savedDOM);
+      card._savedDOM = null;
+      card._virtualized = false;
+      card.classList.remove("virtualized-card");
+      card.style.minHeight = "";
+      const carousel = card.querySelector(".media-carousel");
+      if (carousel && typeof card._savedCarouselScroll === "number") {
+        carousel.scrollLeft = card._savedCarouselScroll;
+      }
       const items = card.querySelectorAll(".media-item");
-      items.forEach((item) => detachMedia(item));
-    } else if (isOutOfVideoWindow) {
-      const videoEls = card.querySelectorAll(
-        '.media-item[data-type="video"], .media-item[data-type="audio"], .media-item[data-type="gif"], .media-item video, .media-item audio, .media-item canvas[data-is-gif]'
-      );
-      videoEls.forEach((el) => {
-        const item = el.classList.contains("media-item") ? el : el.closest(".media-item");
-        if (item) detachMedia(item);
-      });
+      items.forEach((item) => mediaObserver.observe(item));
     }
   });
 }
 
+export const deadMediaCache = new Set();
+
 export function resetFeed() {
   if (!feed) return;
+  if (state.feedAbortController) {
+    try {
+      state.feedAbortController.abort();
+    } catch (_) {}
+    state.feedAbortController = null;
+  }
+  state.feedFetchSeq = (state.feedFetchSeq || 0) + 1;
+
   const items = feed.querySelectorAll(".media-item");
   items.forEach((item) => detachMedia(item));
   feed.innerHTML = "";
@@ -400,16 +445,23 @@ export async function loadMediaWithProgress(item) {
 
   const url = item.dataset.url;
   const type = item.dataset.type;
+  item._isDetached = false;
   const progressOverlay = item.querySelector(".media-progress");
   const filename = item.dataset.originalName || (item.dataset.path || url).split("/").pop() || "media";
 
   const triggerRetry = () => {
     delete item._videoRetryCount;
     delete item._triedDirectFallback;
+    deadMediaCache.delete(url);
     detachMedia(item, true);
     item.dataset.loaded = "true";
     loadMediaWithProgress(item);
   };
+
+  if (deadMediaCache.has(url)) {
+    showMediaUnavailableWarning(progressOverlay, { type, filename, errorStatus: "404", onRetry: triggerRetry });
+    return;
+  }
 
   if (!url || item.dataset.isUnimported === "true" || url.includes("/unimported.")) {
     if (item.dataset.isUnimported === "true" || (url && url.includes("/unimported."))) {
@@ -785,34 +837,46 @@ export async function loadMediaWithProgress(item) {
       if (progressOverlay) progressOverlay.style.display = "none";
       return;
     }
-    let totalSize = 0;
+    let totalSize = parseInt(item.dataset.size || "0", 10) || 0;
     const updateVideoProgress = (statusText = "Buffering...") => {
-      if (!video.duration || video.buffered.length === 0) return;
+      const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+      if (!duration && video.buffered.length === 0 && !totalSize) return;
+
       let totalBufferedSeconds = 0;
       for (let i = 0; i < video.buffered.length; i++) {
         totalBufferedSeconds += (video.buffered.end(i) - video.buffered.start(i));
       }
-      const percent = Math.min(100, Math.round((totalBufferedSeconds / video.duration) * 100));
-      const loadedBytes = totalSize ? Math.round((percent / 100) * totalSize) : 0;
-      const loadedStr = totalSize ? formatBytes(loadedBytes) : `${Math.round(totalBufferedSeconds)}s`;
-      const totalStr = totalSize ? formatBytes(totalSize) : `${Math.round(video.duration)}s`;
+
+      const percent = duration > 0 ? Math.min(100, Math.round((totalBufferedSeconds / duration) * 100)) : null;
+      const loadedBytes = (totalSize && percent !== null) ? Math.round((percent / 100) * totalSize) : 0;
+      const loadedStr = loadedBytes > 0 ? formatBytes(loadedBytes) : (totalBufferedSeconds > 0 ? `${Math.round(totalBufferedSeconds)}s` : "");
+      const totalStr = totalSize > 0 ? formatBytes(totalSize) : (duration > 0 ? `${Math.round(duration)}s` : "");
+
       renderMediaProgress(progressOverlay, statusText, percent, filename, loadedStr, totalStr);
     };
 
-    renderMediaProgress(progressOverlay, "Loading...", null, filename, "", "");
+    renderMediaProgress(progressOverlay, "Loading...", null, filename, "", totalSize > 0 ? formatBytes(totalSize) : "");
     const video = document.createElement(type === "video" ? "video" : "audio");
     video.className = "post-media";
     
     if (type === "video") {
       video.loop = true;
-      video.muted = true;
-      video.defaultMuted = true;
+      const isUnmuted = localStorage.getItem('paw_video_unmuted') === 'true';
+      const savedVol = parseFloat(localStorage.getItem('paw_video_volume') || '1');
+      if (isUnmuted) {
+        video.muted = false;
+        video.defaultMuted = false;
+        video.volume = savedVol > 0 ? savedVol : 1;
+      } else {
+        video.muted = true;
+        video.defaultMuted = true;
+        video.setAttribute("muted", "");
+      }
       video.playsInline = true;
-      video.setAttribute("muted", "");
       video.setAttribute("playsinline", "");
       video.setAttribute("webkit-playsinline", "");
       video.disableRemotePlayback = true;
-      video.preload = "metadata";
+      video.preload = "auto";
       video.controls = false;
     } else {
       video.controls = true;
@@ -820,7 +884,14 @@ export async function loadMediaWithProgress(item) {
 
     const hideOverlay = () => {
       markMediaLoaded(item, filename);
+      if (progressOverlay) progressOverlay.style.display = "none";
     };
+
+    video.addEventListener("durationchange", () => {
+      if (!item.classList.contains("media-loaded")) {
+        updateVideoProgress("Buffering...");
+      }
+    });
 
     video.addEventListener("timeupdate", () => {
       if (video.currentTime > 0) {
@@ -828,28 +899,27 @@ export async function loadMediaWithProgress(item) {
       }
     });
     video.addEventListener("playing", hideOverlay);
+    video.addEventListener("seeked", hideOverlay);
     video.addEventListener("canplay", () => {
       hideOverlay();
       syncCarouselClones(item);
     });
     video.addEventListener("loadedmetadata", () => {
-      updateVideoProgress("Buffering...");
+      if (!item.classList.contains("media-loaded")) {
+        updateVideoProgress("Buffering...");
+      }
     });
     video.addEventListener("progress", () => {
-      if (progressOverlay && progressOverlay.style.display !== "none") {
+      if (progressOverlay && progressOverlay.style.display !== "none" && !item.classList.contains("media-loaded")) {
         updateVideoProgress("Buffering...");
       }
     });
     video.addEventListener("waiting", () => {
-      if (!video.paused && progressOverlay) {
-        if (video.buffered.length > 0) {
-          const firstStart = video.buffered.start(0);
-          if (firstStart > video.currentTime && firstStart < 1.0) {
-            video.currentTime = firstStart;
-          }
+      if (!item.classList.contains("media-loaded")) {
+        if (progressOverlay) {
+          progressOverlay.style.display = "flex";
+          updateVideoProgress("Buffering...");
         }
-        progressOverlay.style.display = "flex";
-        updateVideoProgress("Buffering...");
       }
     });
 
@@ -896,6 +966,8 @@ export async function loadMediaWithProgress(item) {
     });
     video.addEventListener("error", () => {
       if (videoTimeout) clearTimeout(videoTimeout);
+      if (item._isDetached || !item.isConnected || !video.src) return;
+      if (video.error && video.error.code === 1) return;
 
       if (state.currentSite === "e621" && !item._triedDirectFallback) {
         item._triedDirectFallback = true;
@@ -964,6 +1036,9 @@ export async function loadMediaWithProgress(item) {
         return;
       }
       if (progressOverlay) progressOverlay.style.display = "flex";
+      if (video.error && video.error.code === 4) {
+        deadMediaCache.add(url);
+      }
       showMediaUnavailableWarning(progressOverlay, { type, filename, errorStatus: "404", onRetry: triggerRetry });
     });
 
@@ -1034,6 +1109,8 @@ export async function loadMediaWithProgress(item) {
         img.src = url;
         return;
       }
+      deadMediaCache.add(url);
+      deadMediaCache.add(url);
       img.style.display = "none";
       showMediaUnavailableWarning(progressOverlay, {
         type,
@@ -1068,6 +1145,7 @@ export async function loadMediaWithProgress(item) {
           }
         }
       }
+      deadMediaCache.add(url);
       img.style.display = "none";
       showMediaUnavailableWarning(progressOverlay, {
         type,
@@ -2079,93 +2157,6 @@ function setupE621FamilyCarousel(card, post, carousel, indicator, author, title,
   });
 }
 
-export function normalizePost(post) {
-  if (!post) return post;
-
-  // 1. Service resolution
-  if (!post.service) {
-    const match = state.currentFeedEndpoint && state.currentFeedEndpoint.match(/\/api\/v1\/([^\/]+)\/user\/([^\/]+)/);
-    if (match) {
-      post.service = match[1];
-      if (!post.user && !post.user_id && !post.creatorId) post.user = match[2];
-    }
-  }
-
-  // 2. User / Creator ID resolution (especially Coomer format where it's creatorId)
-  if (!post.user) {
-    post.user = post.creatorId || post.creator_id || post.user_id || (post.creator && (post.creator.id || post.creator.name)) || "";
-  }
-
-  // 3. Author display name resolution
-  if (!post.authorName) {
-    post.authorName = post.creatorName || (post.creator && (post.creator.displayName || post.creator.name)) || "";
-    if (!post.authorName && state.currentFeedCreatorName) {
-      post.authorName = state.currentFeedCreatorName;
-    }
-    if (!post.authorName && post.user && Array.isArray(state.allCreators) && state.allCreators.length > 0) {
-      const found = state.allCreators.find((c) => String(c.id) === String(post.user) && (!post.service || c.service === post.service));
-      if (found) post.authorName = found.name || found.displayName;
-    }
-    if (!post.authorName && post.user) {
-      post.authorName = post.user;
-    }
-  }
-
-  // 4. Content / Caption resolution
-  if (!post.content) {
-    post.content = post.captionHtml || post.captionText || post.caption || post.substring || "";
-  }
-
-  // 5. Title resolution: if title is missing/null/empty or "Untitled", fall back to caption snippet or Post #id
-  const hasRawTitle = typeof post.title === "string" && post.title.trim().length > 0 && post.title.trim().toLowerCase() !== "untitled";
-  if (!hasRawTitle) {
-    const textFallback = (post.captionText || post.caption || (typeof post.content === "string" ? post.content.replace(/<[^>]+>/g, " ") : "")).trim();
-    if (textFallback) {
-      const firstLine = textFallback.split(/[\r\n]+/)[0].trim();
-      post.title = firstLine.length > 90 ? firstLine.slice(0, 87) + "..." : firstLine;
-    } else if (post.id) {
-      post.title = `Post #${post.id}`;
-    } else {
-      post.title = "";
-    }
-  }
-
-  // 6. Media attachments normalization (for Coomer new format with storageKey/sha256)
-  if (state.currentSite === "cum" || post.service === "onlyfans" || post.service === "fansly") {
-    if (Array.isArray(post.attachments)) {
-      post.attachments.forEach((att) => {
-        if (!att) return;
-        if (!att.path) {
-          const sha = att.storageKey || att.sha256 || att.id;
-          if (sha) {
-            let variantName = "original.jpg";
-            if (Array.isArray(att.variants) && att.variants.length > 0 && att.variants[0].name) {
-              variantName = att.variants[0].name;
-            } else if (att.originalFilename) {
-              const ext = att.originalFilename.split(".").pop();
-              if (ext) variantName = `original.${ext}`;
-            } else if (att.kind === "video" || (att.mimeType && att.mimeType.startsWith("video/"))) {
-              variantName = "original.mp4";
-            }
-            att.path = `/media/${sha}/${variantName}`;
-            if (!att.name) att.name = att.originalFilename || variantName;
-          }
-        }
-      });
-    }
-  }
-
-  // Legacy hash+ext fallback
-  if (post.hash && post.ext && !post.file && !post.attachments) {
-    post.file = {
-      name: `${post.hash}.${post.ext}`,
-      path: `/${post.hash.substring(0, 2)}/${post.hash.substring(2, 4)}/${post.hash}.${post.ext}`
-    };
-  }
-
-  return post;
-}
-
 export function createPostCard(rawPost) {
   const post = normalizePost(rawPost);
   if (window.pawHideWip || localStorage.getItem("paw_hide_wip") === "true") {
@@ -2630,6 +2621,11 @@ export function createPostCard(rawPost) {
     if (e.target.tagName.toLowerCase() === "button" || e.target.closest("button")) return;
     if (e.target.closest(".zip-info-text")) return;
 
+    // Never trigger carousel or post navigation when interacting with video/audio controls
+    if (e.target.closest(".custom-player-overlay, .video-player-wrapper, .player-bottom-bar, .player-timeline, .player-skip-indicator, video, audio")) {
+      return;
+    }
+
     const edgeCfg = window.pawEdgeConfig || { top: 0.05, bottom: 0.05, left: 0.05, right: 0.05 };
     const x = e.clientX;
     const y = e.clientY;
@@ -2641,16 +2637,6 @@ export function createPostCard(rawPost) {
       y > h * (1 - (edgeCfg.bottom ?? 0.05)) ||
       x < w * (edgeCfg.left ?? 0.05) ||
       x > w * (1 - (edgeCfg.right ?? 0.05));
-
-    if (!isEdgeClick) {
-      if (e.target.closest(".custom-player-overlay")) return;
-      const isVideo = e.target.tagName.toLowerCase() === "video";
-      const isAudio = e.target.tagName.toLowerCase() === "audio";
-      if (isAudio) return;
-      if (isVideo && e.target.closest(".media-item")?.querySelector(".custom-player-overlay")) {
-        return;
-      }
-    }
 
     const navEl = document.getElementById("nav");
     const isNavCurrentlyVisible = navEl && navEl.classList.contains("visible");
@@ -2802,130 +2788,23 @@ export function updateFeedLoading(customText = null) {
   feedLoading.innerHTML = `<span class="loading-spinner"></span><span>${escapeHtml(text)}</span>`;
 }
 
-export function transformE621PostClient(p) {
-  const artistTags = (p.tags && Array.isArray(p.tags.artist)) ? p.tags.artist : [];
-  const contributorTags = (p.tags && Array.isArray(p.tags.contributor)) ? p.tags.contributor : [];
-  const characterTags = (p.tags && Array.isArray(p.tags.character)) ? p.tags.character : [];
-  const speciesTags = (p.tags && Array.isArray(p.tags.species)) ? p.tags.species : [];
-  const generalTags = (p.tags && Array.isArray(p.tags.general)) ? p.tags.general : [];
-  const copyrightTags = (p.tags && Array.isArray(p.tags.copyright)) ? p.tags.copyright : [];
-  const loreTags = (p.tags && Array.isArray(p.tags.lore)) ? p.tags.lore : [];
-  const metaTags = (p.tags && Array.isArray(p.tags.meta)) ? p.tags.meta : [];
-  const invalidTags = (p.tags && Array.isArray(p.tags.invalid)) ? p.tags.invalid : [];
-
-  const artistName = artistTags.length > 0 ? artistTags[0] : (p.uploader_name || "Unknown");
-
-  const fileObj = p.file || {};
-  const ext = (fileObj.ext || "jpg").toLowerCase();
-  const md5 = fileObj.md5 || "";
-  let mainUrl = fileObj.url || "";
-  if (!mainUrl && md5) {
-    mainUrl = `https://static1.e621.net/data/${md5.slice(0, 2)}/${md5.slice(2, 4)}/${md5}.${ext}`;
-  }
-  const sampleObj = p.sample || {};
-  const sampleUrl = sampleObj.has && sampleObj.url ? sampleObj.url : (md5 ? `https://static1.e621.net/data/sample/${md5.slice(0, 2)}/${md5.slice(2, 4)}/${md5}.jpg` : "");
-  const previewObj = p.preview || {};
-  const previewUrl = previewObj.url || (md5 ? `https://static1.e621.net/data/preview/${md5.slice(0, 2)}/${md5.slice(2, 4)}/${md5}.jpg` : "");
-
-  const cleanPath = (u) => {
-    if (!u) return "";
-    const idx = u.indexOf("/data/");
-    if (idx !== -1) {
-      const sub = u.slice(idx + 5);
-      return sub.startsWith("/") ? sub : `/${sub}`;
-    }
-    return u.startsWith("/") ? u : `/${u}`;
-  };
-
-  const primaryPath = md5
-    ? `/${md5.slice(0, 2)}/${md5.slice(2, 4)}/${md5}.${ext}`
-    : cleanPath(mainUrl || sampleUrl);
-  const cleanSample = cleanPath(sampleUrl);
-  const cleanPreview = cleanPath(previewUrl);
-
-  const allTags = [
-    ...artistTags,
-    ...contributorTags,
-    ...characterTags,
-    ...speciesTags,
-    ...generalTags,
-    ...copyrightTags,
-    ...loreTags,
-    ...metaTags,
-    ...invalidTags
-  ];
-
-  const tagsCategorized = {
-    artist: artistTags,
-    contributor: contributorTags,
-    character: characterTags,
-    species: speciesTags,
-    general: generalTags,
-    copyright: copyrightTags,
-    lore: loreTags,
-    meta: metaTags,
-    invalid: invalidTags
-  };
-
-  return {
-    id: String(p.id),
-    user: artistName,
-    artists: artistTags,
-    service: "e621",
-    title: "",
-    published: p.created_at || new Date().toISOString(),
-    added: p.created_at || new Date().toISOString(),
-    edited: p.updated_at || null,
-    content: p.description || "",
-    description: p.description || "",
-    file: {
-      name: `${p.id}.${ext}`,
-      path: primaryPath,
-      size: fileObj.size || 0,
-      width: fileObj.width || 0,
-      height: fileObj.height || 0
-    },
-    attachments: [],
-    preview_url: cleanPreview,
-    sample_url: cleanSample,
-    tags: allTags,
-    tags_categorized: tagsCategorized,
-    relationships: p.relationships || {
-      parent_id: null,
-      has_children: false,
-      children: []
-    },
-    rating: p.rating || "s",
-    score: p.score && typeof p.score.total === "number" ? p.score.total : (typeof p.score === "number" ? p.score : 0),
-    fav_count: p.fav_count || 0
-  };
-}
-
-export async function fetchWithRetry(url, options = {}, retries = 2) {
-  for (let i = 0; i <= retries; i++) {
-    try {
-      const res = await fetch(url, options);
-      if (res.status === 429 && i < retries) {
-        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
-        continue;
-      }
-      return res;
-    } catch (err) {
-      if (i === retries) throw err;
-      await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
-    }
-  }
-}
-
-if (typeof window !== "undefined") {
-  window.fetchWithRetry = fetchWithRetry;
-}
-
 export async function fetchPosts() {
   if (state.isFetching || !state.hasMore) return;
   state.isFetching = true;
   updateFeedLoading();
   if (feedLoading) feedLoading.classList.add("active");
+
+  const thisSeq = ++state.feedFetchSeq;
+  const requestedSite = state.currentSite;
+
+  if (state.feedAbortController) {
+    try {
+      state.feedAbortController.abort();
+    } catch (_) {}
+  }
+  const controller = new AbortController();
+  state.feedAbortController = controller;
+  const signal = controller.signal;
 
   try {
     const isSinglePageFeed =
@@ -2957,7 +2836,7 @@ export async function fetchPosts() {
       }
 
       try {
-        const directRes = await fetch(directUrl.toString(), { headers: e621Headers });
+        const directRes = await fetch(directUrl.toString(), { headers: e621Headers, signal });
         if (directRes && directRes.ok) {
           res = directRes;
         }
@@ -2965,11 +2844,12 @@ export async function fetchPosts() {
 
       // Fallback via proxy worker if direct fetch failed
       if (!res || !res.ok) {
+        if (signal.aborted) return;
         let proxyUrl = state.currentFeedEndpoint;
         const separator = proxyUrl.includes("?") ? "&" : "?";
         proxyUrl += `${separator}o=${state.offset}`;
         try {
-          res = await fetchWithRetry(proxyUrl, { headers: e621Headers });
+          res = await fetchWithRetry(proxyUrl, { headers: e621Headers, signal });
         } catch (_) {}
       }
     } else {
@@ -2980,7 +2860,7 @@ export async function fetchPosts() {
       }
 
       const gelHeaders = state.currentSite === "gelbooru" ? getGelbooruHeaders() : {};
-      const fetchOptions = Object.keys(gelHeaders).length ? { headers: gelHeaders } : undefined;
+      const fetchOptions = { signal, ...(Object.keys(gelHeaders).length ? { headers: gelHeaders } : {}) };
 
       let attempts = 0;
       while (attempts < 3) {
@@ -2989,6 +2869,7 @@ export async function fetchPosts() {
           res = await fetchWithRetry(url, fetchOptions);
           break;
         } catch (e) {
+          if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
           if (attempts < 3) {
             await new Promise((r) => setTimeout(r, 1000));
             updateFeedLoading();
@@ -2999,6 +2880,8 @@ export async function fetchPosts() {
       }
     }
 
+    if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
+
     if (!res || !res.ok) {
       if (res && res.status === 401 && state.currentSite === "gelbooru") {
         throw new Error("Gelbooru API authentication required (401). Please add your Gelbooru User ID and API Key in Cloudflare Worker secrets or the Gelbooru Account panel on the home page.");
@@ -3007,6 +2890,8 @@ export async function fetchPosts() {
     }
 
     let posts = await res.json();
+    if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
+
     let rawBatchCount = 0;
     if (state.currentSite === "e621" && posts && Array.isArray(posts.posts)) {
       rawBatchCount = posts.posts.length;
@@ -3051,6 +2936,7 @@ export async function fetchPosts() {
 
       let addedCount = 0;
       posts.forEach((rawPost) => {
+        if (thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
         const post = normalizePost(rawPost);
         const card = createPostCard(post);
         if (card) {
@@ -3058,6 +2944,8 @@ export async function fetchPosts() {
           addedCount++;
         }
       });
+
+      if (thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
 
       state.offset += (rawBatchCount || posts.length);
       const cards = feed.querySelectorAll(".post-card");
@@ -3069,12 +2957,17 @@ export async function fetchPosts() {
       }
     }
   } catch (err) {
+    if (err.name === "AbortError" || signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) {
+      return;
+    }
     console.error("fetchPosts failure:", err);
     updateFeedLoading("Failed to load posts.");
   } finally {
-    state.isFetching = false;
-    if (feedLoading) feedLoading.classList.remove("active");
-    stopProgress();
+    if (thisSeq === state.feedFetchSeq) {
+      state.isFetching = false;
+      if (feedLoading) feedLoading.classList.remove("active");
+      stopProgress();
+    }
   }
 }
 

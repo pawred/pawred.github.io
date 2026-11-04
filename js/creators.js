@@ -1,5 +1,5 @@
 import { PROXY_URL, state } from "./state.js";
-import { getServiceColor, startProgress, stopProgress, escapeHtml, fetchWithRetry } from "./utils.js";
+import { getServiceColor, startProgress, stopProgress, escapeHtml, fetchWithRetry, idbGetCached, idbSetCached } from "./utils.js";
 import { updateNavTabs, showView, navBack, feedView } from "./nav.js";
 import { resetFeed, fetchPosts } from "./feed.js";
 import { getE621Headers } from "./e621Auth.js";
@@ -281,6 +281,15 @@ export async function loadCreators() {
   const loadSeq = ++creatorsLoadSeq;
   const currentSiteAtCall = state.currentSite;
 
+  if (state.creatorsAbortController) {
+    try {
+      state.creatorsAbortController.abort();
+    } catch (_) {}
+  }
+  const controller = new AbortController();
+  state.creatorsAbortController = controller;
+  const signal = controller.signal;
+
   state.loadedCreatorsSite = currentSiteAtCall;
   state.allCreators = [];
   if (creatorsList) creatorsList.innerHTML = "";
@@ -292,7 +301,8 @@ export async function loadCreators() {
   startProgress();
 
   try {
-    let res;
+    let rawCreators = null;
+    let res = null;
     if (currentSiteAtCall === "e621") {
       const query = searchInput ? searchInput.value.trim() : "";
       let directUrl = "https://e621.net/tags.json?search[category]=1&search[order]=count&limit=100";
@@ -300,7 +310,7 @@ export async function loadCreators() {
         directUrl += `&search[name_matches]=*${encodeURIComponent(query.toLowerCase())}*`;
       }
       try {
-        res = await fetch(directUrl, { headers: getE621Headers() });
+        res = await fetch(directUrl, { headers: getE621Headers(), signal });
       } catch (_) {}
       if (!res || !res.ok) {
         let ep = `${PROXY_URL}/${currentSiteAtCall}/api/v1/creators`;
@@ -308,16 +318,30 @@ export async function loadCreators() {
           ep += `?q=${encodeURIComponent(query)}`;
         }
         try {
-          res = await fetchWithRetry(ep, { headers: getE621Headers() });
+          res = await fetchWithRetry(ep, { headers: getE621Headers(), signal });
         } catch (_) {}
       }
+      if (loadSeq !== creatorsLoadSeq || state.currentSite !== currentSiteAtCall || signal.aborted) return;
+      if (!res || !res.ok) throw new Error("Failed to fetch creators: " + (res ? `${res.status} ${res.statusText}` : "timeout"));
+      rawCreators = await res.json();
     } else {
-      res = await fetchWithRetry(`${PROXY_URL}/${currentSiteAtCall}/api/v1/creators`);
+      const cacheKey = `creators_${currentSiteAtCall}`;
+      const cached = await idbGetCached(cacheKey, 24 * 60 * 60 * 1000);
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        rawCreators = cached;
+      } else {
+        res = await fetchWithRetry(`${PROXY_URL}/${currentSiteAtCall}/api/v1/creators`, { signal });
+        if (loadSeq !== creatorsLoadSeq || state.currentSite !== currentSiteAtCall || signal.aborted) return;
+        if (!res || !res.ok) throw new Error("Failed to fetch creators: " + (res ? `${res.status} ${res.statusText}` : "timeout"));
+        rawCreators = await res.json();
+        if (Array.isArray(rawCreators) && rawCreators.length > 0) {
+          idbSetCached(cacheKey, rawCreators).catch(() => {});
+        }
+      }
     }
 
-    if (loadSeq !== creatorsLoadSeq || state.currentSite !== currentSiteAtCall) return;
-    if (!res || !res.ok) throw new Error("Failed to fetch creators: " + (res ? `${res.status} ${res.statusText}` : "timeout"));
-    let rawCreators = await res.json();
+    if (loadSeq !== creatorsLoadSeq || state.currentSite !== currentSiteAtCall || signal.aborted) return;
+    if (!rawCreators) throw new Error("Failed to load creators");
     if (currentSiteAtCall === "e621" && Array.isArray(rawCreators) && rawCreators.length > 0 && rawCreators[0].post_count !== undefined && !rawCreators[0].service) {
       rawCreators = rawCreators.map((t) => ({
         id: t.name,
@@ -362,11 +386,21 @@ export async function loadCreators() {
       }
     });
 
+    const parseTimestamp = (v) => {
+      if (!v) return 0;
+      if (typeof v === "number") return v < 1e11 ? v * 1000 : v;
+      const t = new Date(v).getTime();
+      return isNaN(t) ? 0 : t;
+    };
+
     state.allCreators = Array.from(uniqueCreators.values()).map((uc) => {
       uc.platforms.sort((a, b) => (b.favorited || 0) - (a.favorited || 0));
+      const main = uc.platforms[0];
       return {
-        ...uc.platforms[0],
+        ...main,
         allPlatforms: uc.platforms,
+        _updatedTime: parseTimestamp(main.updated),
+        _indexedTime: parseTimestamp(main.indexed),
       };
     });
 
@@ -381,7 +415,7 @@ export async function loadCreators() {
 
     filterAndSortCreators();
   } catch (error) {
-    if (loadSeq !== creatorsLoadSeq) return;
+    if (loadSeq !== creatorsLoadSeq || error.name === "AbortError" || signal?.aborted) return;
     console.error("Error fetching creators:", error);
     if (creatorsLoading) creatorsLoading.innerHTML = `<span>Failed to load creators.</span>`;
   } finally {
@@ -447,9 +481,9 @@ export function filterAndSortCreators() {
     if (sort === "popularity" || sort === "followers-desc" || sort === "followers-asc") {
       diff = (b.favorited || b.bookmarked || 0) - (a.favorited || a.bookmarked || 0);
     } else if (sort === "indexed") {
-      diff = getTime(b.indexed) - getTime(a.indexed);
+      diff = (b._indexedTime || 0) - (a._indexedTime || 0);
     } else if (sort === "updated") {
-      diff = getTime(b.updated) - getTime(a.updated);
+      diff = (b._updatedTime || 0) - (a._updatedTime || 0);
     } else if (sort === "alphabetical" || sort === "name-asc" || sort === "name-desc") {
       diff = (a.name || "").localeCompare(b.name || "");
       return isAsc ? -diff : diff;

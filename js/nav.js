@@ -1042,6 +1042,13 @@ export function wrapCarousel(carousel, direction) {
 }
 
 export function showView(viewElement, showNav = true) {
+  if (viewElement !== creatorsView && state.creatorsAbortController) {
+    try {
+      state.creatorsAbortController.abort();
+    } catch (_) {}
+    state.creatorsAbortController = null;
+  }
+
   [welcomeScreen, creatorsView, feedView].forEach((v) => {
     if (v) v.classList.remove("active");
   });

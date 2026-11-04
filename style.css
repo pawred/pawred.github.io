@@ -20,6 +20,13 @@ a {
   -webkit-user-drag: none;
 }
 
+a,
+a:visited,
+a:active {
+  color: inherit;
+  text-decoration: none;
+}
+
 input,
 textarea,
 [contenteditable],
@@ -528,6 +535,149 @@ textarea,
   background: #1f1f1f;
 }
 
+/* Navigation Tips Collapsible Card */
+details.nav-tips {
+  margin-top: 36px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  max-width: 480px;
+  width: 100%;
+  color: #ccc;
+  overflow: hidden;
+  transition: background 0.2s, border-color 0.2s;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+details.nav-tips:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+details.nav-tips[open] {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+summary.nav-tips-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 18px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #eee;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  outline: none;
+  transition: color 0.15s, background 0.15s;
+}
+
+summary.nav-tips-summary::-webkit-details-marker {
+  display: none;
+}
+
+summary.nav-tips-summary:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.nav-tips-summary-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-tips-icon {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.nav-tips-arrow {
+  color: #888;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s;
+  flex-shrink: 0;
+}
+
+summary.nav-tips-summary:hover .nav-tips-arrow {
+  color: #fff;
+}
+
+details.nav-tips[open] .nav-tips-arrow {
+  transform: rotate(180deg);
+  color: #fff;
+}
+
+.nav-tips-content {
+  padding: 6px 18px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  animation: navTipsFadeIn 0.2s ease-out;
+}
+
+@keyframes navTipsFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.nav-tips-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.nav-tips-group {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.nav-tips-group-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #aaa;
+  margin-bottom: 2px;
+}
+
+.nav-tips-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.86rem;
+  color: #bbb;
+  padding: 3px 0;
+}
+
+.nav-tips-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.nav-tips-item kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.2;
+  color: #f0f0f0;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 5px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
 .welcome-footer {
   margin-top: 36px;
   display: flex;
@@ -547,7 +697,6 @@ textarea,
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.08);
   transition:
-    color 0.2s,
     background 0.2s,
     border-color 0.2s;
   word-break: break-all;
@@ -557,6 +706,10 @@ textarea,
   color: #fff;
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.2);
+  transition:
+    color 0.2s,
+    background 0.2s,
+    border-color 0.2s;
 }
 
 .welcome-github-icon {
@@ -2807,6 +2960,15 @@ body.no-animations * {
   transform: translate(-50%, -50%) scale(0.92);
 }
 
+.player-preload-active {
+  color: #ff5577 !important;
+}
+
+.player-preload-active svg,
+.player-preload-active svg path {
+  fill: #ff5577 !important;
+}
+
 /* Double-tap Skip Indicators */
 .player-skip-indicator {
   position: absolute;
@@ -2933,6 +3095,7 @@ body.no-animations * {
   background: rgba(255, 255, 255, 0.45);
   border-radius: 2px;
   pointer-events: none;
+  transition: width 0.15s ease;
 }
 
 .player-timeline-progress {
@@ -2941,9 +3104,33 @@ body.no-animations * {
   left: 0;
   height: 100%;
   width: 0%;
-  background: #ff5577;
+  background-color: #ff5577;
   border-radius: 2px;
   pointer-events: none;
+}
+
+/* Subtle, sleek animated barber-pole stripes on the loaded progress bar when buffering */
+.custom-player-overlay.is-buffering .player-timeline-progress,
+.player-timeline.buffering .player-timeline-progress {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    #ff5577,
+    #ff5577 8px,
+    #ff7e98 8px,
+    #ff7e98 16px
+  );
+  background-size: 22.6px 22.6px;
+  animation: progressStripes 0.65s linear infinite;
+}
+
+@keyframes progressStripes {
+  0% { background-position: 0 0; }
+  100% { background-position: 22.6px 0; }
+}
+
+.custom-player-overlay.is-buffering .player-center-btn {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 .player-timeline-thumb {
@@ -3019,7 +3206,7 @@ body.no-animations * {
   align-items: center;
   pointer-events: none;
   transition: width 0.25s ease, max-width 0.25s ease, opacity 0.2s ease, margin 0.2s ease, padding 0.25s ease;
-  margin-left: 0;
+  margin-right: 0;
   padding: 0;
   box-sizing: border-box;
 }
@@ -3031,8 +3218,7 @@ body.no-animations * {
   max-width: 76px;
   opacity: 1;
   pointer-events: auto;
-  margin-left: 4px;
-  margin-right: 6px;
+  margin-right: 4px;
   padding: 0 6px;
   overflow: visible;
 }

@@ -19,4 +19,7 @@ export const state = {
   cumSelectedTypes: ["photos", "videos", "audio", "text"],
   creatorSortDir: "desc",
   currentGalleryPost: null,
+  feedAbortController: null,
+  creatorsAbortController: null,
+  feedFetchSeq: 0,
 };

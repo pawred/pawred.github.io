@@ -107,6 +107,15 @@ export function attachCustomVideoPlayer(video, container) {
         <div class="player-spacer"></div>
 
         <div class="player-volume-group">
+          <div class="player-volume-slider-wrap">
+            <div class="player-volume-slider" role="slider" aria-label="Volume" tabindex="0">
+              <div class="player-volume-track">
+                <div class="player-volume-fill"></div>
+              </div>
+              <div class="player-volume-thumb"></div>
+            </div>
+          </div>
+
           <button class="player-btn player-btn-mute" type="button" aria-label="Mute / Unmute">
             <svg class="player-icon-vol-high" viewBox="0 0 24 24" width="22" height="22" fill="#ffffff" style="display: none;">
               <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" fill="#ffffff"/>
@@ -118,16 +127,14 @@ export function attachCustomVideoPlayer(video, container) {
               <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" fill="#ffffff"/>
             </svg>
           </button>
-
-          <div class="player-volume-slider-wrap">
-            <div class="player-volume-slider" role="slider" aria-label="Volume" tabindex="0">
-              <div class="player-volume-track">
-                <div class="player-volume-fill"></div>
-              </div>
-              <div class="player-volume-thumb"></div>
-            </div>
-          </div>
         </div>
+
+        <button class="player-btn player-btn-preload" type="button" aria-label="Preload Full Video" title="Preload entire video into memory">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="#ffffff">
+            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z" fill="#ffffff"/>
+          </svg>
+          <span class="player-preload-text" style="display: none; font-size: 11px; margin-left: 3px; font-weight: bold;"></span>
+        </button>
 
         <button class="player-btn player-btn-fs" type="button" aria-label="Fullscreen">
           <svg class="player-icon-fs-enter" viewBox="0 0 24 24" width="22" height="22" fill="#ffffff"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" fill="#ffffff"/></svg>
@@ -157,6 +164,8 @@ export function attachCustomVideoPlayer(video, container) {
   const durationTimeEl = overlay.querySelector(".player-duration-time");
   const btnMute = overlay.querySelector(".player-btn-mute");
   const btnFs = overlay.querySelector(".player-btn-fs");
+  const btnPreload = overlay.querySelector(".player-btn-preload");
+  const preloadText = overlay.querySelector(".player-preload-text");
 
   const iconPlay = btnPlay.querySelector(".player-icon-play");
   const iconPause = btnPlay.querySelector(".player-icon-pause");
@@ -188,7 +197,23 @@ export function attachCustomVideoPlayer(video, container) {
   let skipResetTimer = null;
   let isScrubbing = false;
   let isVolumeScrubbing = false;
-  let lastNonZeroVolume = 1;
+  const savedUnmuted = localStorage.getItem('paw_video_unmuted') === 'true';
+  const savedVolume = parseFloat(localStorage.getItem('paw_video_volume') || '1');
+  let lastNonZeroVolume = savedVolume > 0 ? savedVolume : 1;
+
+  if (!isGif) {
+    if (savedUnmuted) {
+      video.muted = false;
+      video.defaultMuted = false;
+      video.removeAttribute("muted");
+      video.volume = lastNonZeroVolume;
+    } else {
+      video.muted = true;
+      video.defaultMuted = true;
+      video.setAttribute("muted", "");
+      video.volume = lastNonZeroVolume;
+    }
+  }
 
   function updateVideoDimensions() {
     if (!video.videoWidth || !video.videoHeight) {
@@ -257,27 +282,71 @@ export function attachCustomVideoPlayer(video, container) {
     }
   }
 
+  let isCushionBuffering = false;
+  let userWantsPlayback = !video.paused;
+  const TARGET_CUSHION = 3.5;
+
   function updatePlayState() {
-    const isPaused = video.paused;
+    const isPaused = video.paused && !isCushionBuffering;
     overlay.classList.toggle("is-paused", isPaused);
     iconPlay.style.display = isPaused ? "" : "none";
     iconPause.style.display = isPaused ? "none" : "";
     centerPlayIcon.style.display = isPaused ? "" : "none";
     centerPauseIcon.style.display = isPaused ? "none" : "";
 
-    if (isPaused) {
+    if (video.paused) {
       clearTimeout(autoHideTimer);
     } else {
       resetAutoHide();
     }
   }
 
+  function getBufferAhead() {
+    const cur = video.currentTime;
+    if (!video.buffered || video.buffered.length === 0) return 0;
+    for (let i = 0; i < video.buffered.length; i++) {
+      if (video.buffered.start(i) <= cur + 0.4 && video.buffered.end(i) >= cur) {
+        return video.buffered.end(i) - cur;
+      }
+    }
+    return 0;
+  }
+
+  function showBuffering() {
+    overlay.classList.add("is-buffering");
+    if (timeline) timeline.classList.add("buffering");
+    updatePlayState();
+  }
+
+  function hideBuffering() {
+    overlay.classList.remove("is-buffering");
+    if (timeline) timeline.classList.remove("buffering");
+    updatePlayState();
+  }
+
+  function triggerBufferPause() {
+    if (isCushionBuffering) return;
+    isCushionBuffering = true;
+    showBuffering();
+    video.pause();
+  }
+
   function togglePlay() {
     if (video.paused) {
+      userWantsPlayback = true;
       if (video.dataset?.isGif === "true") video._userPaused = false;
-      const p = video.play();
-      if (p !== undefined && typeof p.catch === "function") p.catch(() => {});
+      const ahead = getBufferAhead();
+      const remaining = (video.duration || 0) - video.currentTime;
+      if (ahead < 1.0 && remaining > 1.0) {
+        triggerBufferPause();
+      } else {
+        const p = video.play();
+        if (p !== undefined && typeof p.catch === "function") p.catch(() => {});
+      }
     } else {
+      userWantsPlayback = false;
+      isCushionBuffering = false;
+      hideBuffering();
       if (video.dataset?.isGif === "true") video._userPaused = true;
       video.pause();
     }
@@ -314,10 +383,13 @@ export function attachCustomVideoPlayer(video, container) {
     if (video.muted || video.volume === 0) {
       video.muted = false;
       video.volume = lastNonZeroVolume > 0 ? lastNonZeroVolume : 1;
+      localStorage.setItem('paw_video_unmuted', 'true');
+      localStorage.setItem('paw_video_volume', String(video.volume));
       volumeGroup.classList.add("expanded");
     } else {
       lastNonZeroVolume = video.volume > 0 ? video.volume : 1;
       video.muted = true;
+      localStorage.setItem('paw_video_unmuted', 'false');
       volumeGroup.classList.remove("expanded");
     }
     updateMuteState();
@@ -330,9 +402,12 @@ export function attachCustomVideoPlayer(video, container) {
     video.volume = pct;
     if (pct === 0) {
       video.muted = true;
+      localStorage.setItem('paw_video_unmuted', 'false');
     } else {
       video.muted = false;
       lastNonZeroVolume = pct;
+      localStorage.setItem('paw_video_unmuted', 'true');
+      localStorage.setItem('paw_video_volume', String(pct));
     }
     updateMuteState();
     resetAutoHide();
@@ -385,8 +460,10 @@ export function attachCustomVideoPlayer(video, container) {
   volumeSliderWrap.addEventListener("touchend", endVolumeScrub);
   volumeSliderWrap.addEventListener("touchcancel", endVolumeScrub);
 
+  let isSeekingTarget = null;
+
   function updateTimeline() {
-    if (isScrubbing) return;
+    if (isScrubbing || isSeekingTarget !== null || video.seeking) return;
     const duration = video.duration || 0;
     const current = video.currentTime || 0;
     const pct = duration > 0 ? (current / duration) * 100 : 0;
@@ -398,7 +475,7 @@ export function attachCustomVideoPlayer(video, container) {
     if (video.buffered && video.buffered.length > 0 && duration > 0) {
       let maxBuffered = 0;
       for (let i = 0; i < video.buffered.length; i++) {
-        if (video.buffered.start(i) <= current && video.buffered.end(i) >= maxBuffered) {
+        if (video.buffered.start(i) <= current + 0.5 && video.buffered.end(i) >= maxBuffered) {
           maxBuffered = video.buffered.end(i);
         }
       }
@@ -407,17 +484,69 @@ export function attachCustomVideoPlayer(video, container) {
     }
   }
 
-  function seekFromEvent(e) {
+  let lastSeekTime = 0;
+  let pendingSeekTarget = null;
+  let seekThrottleTimer = null;
+
+  function applySeek(targetTime) {
+    if (!isFinite(targetTime) || isNaN(targetTime)) return;
+    isSeekingTarget = targetTime;
+    video.currentTime = targetTime;
+  }
+
+  function getClientX(e) {
+    if (e.clientX !== undefined && e.clientX !== null && !isNaN(e.clientX) && e.clientX > 0) {
+      return e.clientX;
+    }
+    if (e.changedTouches && e.changedTouches[0]) {
+      return e.changedTouches[0].clientX;
+    }
+    if (e.touches && e.touches[0]) {
+      return e.touches[0].clientX;
+    }
+    return 0;
+  }
+
+  function seekFromEvent(e, isCommit = false) {
     const rect = timeline.getBoundingClientRect();
-    const clientX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+    const clientX = getClientX(e);
+    if (!clientX && isCommit && isSeekingTarget !== null) {
+      applySeek(isSeekingTarget);
+      return;
+    }
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const duration = video.duration || 0;
+    const duration = isFinite(video.duration) ? video.duration : 0;
+    const targetTime = pct * duration;
 
     timelineProgress.style.width = `${pct * 100}%`;
     timelineThumb.style.left = `${pct * 100}%`;
-    currentTimeEl.textContent = formatTime(pct * duration);
+    currentTimeEl.textContent = formatTime(targetTime);
 
-    video.currentTime = pct * duration;
+    if (isCommit) {
+      if (seekThrottleTimer) {
+        clearTimeout(seekThrottleTimer);
+        seekThrottleTimer = null;
+      }
+      pendingSeekTarget = null;
+      applySeek(targetTime);
+      return;
+    }
+
+    pendingSeekTarget = targetTime;
+    const now = Date.now();
+    if (now - lastSeekTime > 100) {
+      lastSeekTime = now;
+      applySeek(targetTime);
+    } else if (!seekThrottleTimer) {
+      seekThrottleTimer = setTimeout(() => {
+        seekThrottleTimer = null;
+        if (pendingSeekTarget !== null) {
+          lastSeekTime = Date.now();
+          applySeek(pendingSeekTarget);
+          pendingSeekTarget = null;
+        }
+      }, 100);
+    }
   }
 
   timeline.addEventListener("mousedown", (e) => {
@@ -431,11 +560,12 @@ export function attachCustomVideoPlayer(video, container) {
       seekFromEvent(moveEv);
     };
 
-    const onMouseUp = () => {
+    const onMouseUp = (upEv) => {
       isScrubbing = false;
       timeline.classList.remove("scrubbing");
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
+      seekFromEvent(upEv, true);
       resetAutoHide();
     };
 
@@ -462,6 +592,7 @@ export function attachCustomVideoPlayer(video, container) {
     e.stopPropagation();
     isScrubbing = false;
     timeline.classList.remove("scrubbing");
+    seekFromEvent(e, true);
     resetAutoHide();
   };
   timeline.addEventListener("touchend", endTimelineScrub);
@@ -510,6 +641,8 @@ export function attachCustomVideoPlayer(video, container) {
   }, { passive: true });
 
   overlay.addEventListener("click", (e) => {
+    e.stopPropagation();
+
     if (container.querySelector(".media-progress.media-error, .media-progress:has(.retry-media-btn)")) {
       return;
     }
@@ -519,7 +652,6 @@ export function attachCustomVideoPlayer(video, container) {
       if (e.target.closest(".post-info")) {
         return;
       }
-      e.stopPropagation();
       closeAllPostInfo();
       return;
     }
@@ -533,27 +665,14 @@ export function attachCustomVideoPlayer(video, container) {
       return;
     }
 
-    const x = e.clientX;
     const y = e.clientY;
-    const w = window.innerWidth;
     const h = window.innerHeight;
-
     const edgeCfg = window.pawEdgeConfig || { top: 0.05, bottom: 0.05, left: 0.05, right: 0.05 };
     const isVerticalEdge = y < h * (edgeCfg.top ?? 0.05) || y > h * (1 - (edgeCfg.bottom ?? 0.05));
 
-    const carousel = container.closest(".media-carousel") || container.closest(".zip-folder-row");
-    const hasMultiple = carousel && (
-      parseInt(carousel.dataset.mediaCount || "1", 10) > 1 ||
-      carousel.querySelectorAll(".media-item:not([data-is-clone='true'])").length > 1
-    );
-    const isZipGallery = !!container.closest("#zip-viewer");
-    const isHorizontalEdge = (hasMultiple || isZipGallery) && (x < w * (edgeCfg.left ?? 0.05) || x > w * (1 - (edgeCfg.right ?? 0.05)));
-
-    if (isVerticalEdge || isHorizontalEdge) {
+    if (isVerticalEdge) {
       return;
     }
-
-    e.stopPropagation();
 
     const rect = overlay.getBoundingClientRect();
     const clickX = e.clientX;
@@ -731,22 +850,218 @@ export function attachCustomVideoPlayer(video, container) {
   video.addEventListener("webkitbeginfullscreen", updateFsIcon);
   video.addEventListener("webkitendfullscreen", updateFsIcon);
 
-  video.addEventListener("timeupdate", updateTimeline);
-  video.addEventListener("play", updatePlayState);
-  video.addEventListener("pause", updatePlayState);
-  video.addEventListener("ended", updatePlayState);
-  video.addEventListener("volumechange", updateMuteState);
+  const updateDuration = () => {
+    if (isFinite(video.duration) && video.duration > 0) {
+      durationTimeEl.textContent = formatTime(video.duration);
+    }
+  };
 
+  video.addEventListener("durationchange", updateDuration);
   video.addEventListener("loadedmetadata", () => {
-    durationTimeEl.textContent = formatTime(video.duration);
+    updateDuration();
     updateVideoDimensions();
     updateTimeline();
     updateMuteState();
     updatePlayState();
   });
 
-  video.addEventListener("canplay", updateVideoDimensions);
-  video.addEventListener("playing", updateVideoDimensions);
+  video.addEventListener("timeupdate", () => {
+    updateTimeline();
+    if (durationTimeEl.textContent === "0:00" && isFinite(video.duration) && video.duration > 0) {
+      updateDuration();
+    }
+    // Prevent choppy frame dropping when buffer runs dry while playing
+    if (!video.paused && !isCushionBuffering) {
+      const ahead = getBufferAhead();
+      const remaining = (video.duration || 0) - video.currentTime;
+      if (ahead < 0.45 && remaining > 1.0) {
+        userWantsPlayback = true;
+        triggerBufferPause();
+      }
+    }
+  });
+
+  const checkBufferRecovery = () => {
+    updateTimeline();
+    const ahead = getBufferAhead();
+    const remaining = (video.duration || 0) - video.currentTime;
+
+    if (!isCushionBuffering) {
+      if (!video.paused && ahead < 0.45 && remaining > 1.0) {
+        userWantsPlayback = true;
+        triggerBufferPause();
+      } else if (ahead > 0.8) {
+        hideBuffering();
+      }
+      return;
+    }
+
+    // Wait until at least TARGET_CUSHION seconds of buffer ahead (or end of file) before resuming
+    if (ahead >= TARGET_CUSHION || ahead >= remaining - 0.2 || (video.duration && ahead >= remaining)) {
+      isCushionBuffering = false;
+      hideBuffering();
+      if (userWantsPlayback) {
+        const p = video.play();
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      }
+    }
+  };
+
+  video.addEventListener("progress", () => {
+    checkBufferRecovery();
+  });
+  video.addEventListener("suspend", updateTimeline);
+  video.addEventListener("play", updatePlayState);
+  video.addEventListener("pause", updatePlayState);
+  video.addEventListener("ended", () => {
+    isCushionBuffering = false;
+    userWantsPlayback = false;
+    hideBuffering();
+    updatePlayState();
+  });
+  video.addEventListener("error", () => {
+    isCushionBuffering = false;
+    userWantsPlayback = false;
+    hideBuffering();
+    updatePlayState();
+  });
+  video.addEventListener("volumechange", updateMuteState);
+
+  video.addEventListener("waiting", () => {
+    userWantsPlayback = true;
+    triggerBufferPause();
+  });
+
+  // Watchdog: In Firefox on Linux, media decoders can stall video frames while audio clock ticks.
+  // Detecting when currentTime advances without new video frames recovers the rendering pipeline automatically.
+  let lastPresentedFrameTime = -1;
+  let lastPresentWallTime = Date.now();
+  if (typeof video.requestVideoFrameCallback === "function") {
+    const onFrame = (now, metadata) => {
+      lastPresentedFrameTime = metadata.mediaTime;
+      lastPresentWallTime = Date.now();
+      if (video._cleanupCustomPlayer) {
+        video.requestVideoFrameCallback(onFrame);
+      }
+    };
+    video.requestVideoFrameCallback(onFrame);
+
+    video.addEventListener("timeupdate", () => {
+      if (!video.paused && video.currentTime > 1.5 && lastPresentedFrameTime >= 0) {
+        const timeDiff = video.currentTime - lastPresentedFrameTime;
+        const wallDiff = Date.now() - lastPresentWallTime;
+        if (timeDiff > 1.8 && wallDiff > 1800) {
+          // Video frames are frozen while audio advances: nudge decoder to resync
+          lastPresentWallTime = Date.now();
+          lastPresentedFrameTime = video.currentTime;
+          const target = video.currentTime;
+          video.currentTime = target;
+        }
+      }
+    });
+  }
+
+  video.addEventListener("canplay", () => {
+    updateVideoDimensions();
+    updateDuration();
+    checkBufferRecovery();
+  });
+  video.addEventListener("canplaythrough", () => {
+    updateDuration();
+    if (isCushionBuffering) {
+      isCushionBuffering = false;
+      hideBuffering();
+      if (userWantsPlayback) video.play().catch(() => {});
+    } else {
+      hideBuffering();
+    }
+  });
+  video.addEventListener("seeked", () => {
+    isSeekingTarget = null;
+    updateTimeline();
+  });
+
+  video.addEventListener("playing", () => {
+    updateVideoDimensions();
+    if (!isCushionBuffering) {
+      hideBuffering();
+    }
+  });
+
+  let preloadAbortController = null;
+  let isPreloading = false;
+  if (btnPreload) {
+    btnPreload.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (isPreloading) {
+        if (preloadAbortController) {
+          try { preloadAbortController.abort(); } catch (_) {}
+          preloadAbortController = null;
+        }
+        isPreloading = false;
+        btnPreload.classList.remove("player-preload-active");
+        if (preloadText) preloadText.style.display = "none";
+        return;
+      }
+
+      const mediaUrl = video.src;
+      if (!mediaUrl || mediaUrl.startsWith("blob:")) return;
+
+      isPreloading = true;
+      btnPreload.classList.add("player-preload-active");
+      if (preloadText) {
+        preloadText.style.display = "inline";
+        preloadText.textContent = "0%";
+      }
+
+      preloadAbortController = new AbortController();
+      try {
+        const res = await fetch(mediaUrl, { signal: preloadAbortController.signal });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const contentLength = +(res.headers.get("content-length") || 0);
+        const reader = res.body.getReader();
+        const chunks = [];
+        let received = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.byteLength;
+          if (contentLength > 0 && preloadText) {
+            const pct = Math.round((received / contentLength) * 100);
+            preloadText.textContent = `${pct}%`;
+            timelineBuffered.style.width = `${pct}%`;
+          }
+        }
+
+        const blob = new Blob(chunks, { type: res.headers.get("content-type") || "video/mp4" });
+        const blobUrl = URL.createObjectURL(blob);
+        container._preloadedBlobUrl = blobUrl;
+
+        const cur = video.currentTime;
+        const paused = video.paused;
+        video.src = blobUrl;
+        video.currentTime = cur;
+        if (!paused) video.play().catch(() => {});
+
+        timelineBuffered.style.width = "100%";
+        if (preloadText) {
+          preloadText.textContent = "Done";
+          setTimeout(() => {
+            if (preloadText) preloadText.style.display = "none";
+          }, 2000);
+        }
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          console.warn("Video preload error:", err);
+          if (preloadText) preloadText.textContent = "Err";
+        }
+      } finally {
+        isPreloading = false;
+      }
+    });
+  }
 
   if (video.readyState >= 1) {
     durationTimeEl.textContent = formatTime(video.duration);
@@ -771,6 +1086,14 @@ export function attachCustomVideoPlayer(video, container) {
   document.addEventListener("paw:navhidden", onGlobalNavHidden);
 
   video._cleanupCustomPlayer = () => {
+    if (preloadAbortController) {
+      try { preloadAbortController.abort(); } catch (_) {}
+      preloadAbortController = null;
+    }
+    if (container._preloadedBlobUrl) {
+      try { URL.revokeObjectURL(container._preloadedBlobUrl); } catch (_) {}
+      container._preloadedBlobUrl = null;
+    }
     document.removeEventListener("fullscreenchange", updateFsIcon);
     video.removeEventListener("webkitbeginfullscreen", updateFsIcon);
     video.removeEventListener("webkitendfullscreen", updateFsIcon);

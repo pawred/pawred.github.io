@@ -2,11 +2,29 @@
 // Handles e621 user authentication, profile sync, blacklist parsing, and post filtering.
 
 import { PROXY_URL, state } from "./state.js";
+import { idbGet, idbSet, STORE_DATA } from "./utils.js";
 
 const KEY_USERNAME = "paw_e621_username";
 const KEY_API_KEY = "paw_e621_api_key";
 const KEY_BLACKLIST = "paw_e621_blacklist";
 const KEY_BLACKLIST_ENABLED = "paw_e621_blacklist_enabled";
+
+let cachedBlacklist = null;
+
+export async function initBlacklistStorage() {
+  try {
+    const idbVal = await idbGet(STORE_DATA, KEY_BLACKLIST);
+    if (idbVal !== null && idbVal !== undefined) {
+      cachedBlacklist = idbVal;
+    } else {
+      const localVal = localStorage.getItem(KEY_BLACKLIST);
+      if (localVal) {
+        cachedBlacklist = localVal;
+        await idbSet(STORE_DATA, KEY_BLACKLIST, localVal);
+      }
+    }
+  } catch (_) {}
+}
 
 export function getE621Auth() {
   const username = (localStorage.getItem(KEY_USERNAME) || "").trim();
@@ -30,11 +48,17 @@ export function saveE621Auth(username, apiKey) {
 }
 
 export function getE621Blacklist() {
-  return localStorage.getItem(KEY_BLACKLIST) || "";
+  if (cachedBlacklist !== null) return cachedBlacklist;
+  cachedBlacklist = localStorage.getItem(KEY_BLACKLIST) || "";
+  return cachedBlacklist;
 }
 
 export function saveE621Blacklist(text) {
-  localStorage.setItem(KEY_BLACKLIST, text || "");
+  cachedBlacklist = text || "";
+  try {
+    localStorage.setItem(KEY_BLACKLIST, text || "");
+  } catch (_) {}
+  idbSet(STORE_DATA, KEY_BLACKLIST, text || "").catch(() => {});
 }
 
 export function isE621BlacklistEnabled() {
