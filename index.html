@@ -190,6 +190,10 @@
             <span class="source-dot" style="--dot-color: #006ffa;"></span>
             <span class="source-name">Gelbooru</span>
           </button>
+          <button type="button" class="source-btn" data-site="twitter" role="radio" aria-checked="false">
+            <span class="source-dot" style="--dot-color: #1d9bf0;"></span>
+            <span class="source-name">Twitter</span>
+          </button>
         </div>
         <select id="site-selector" style="display: none;" aria-hidden="true">
           <option value="pawchive">Pawchive</option>
@@ -197,6 +201,7 @@
           <option value="cum">Coomer</option>
           <option value="e621">e621</option>
           <option value="gelbooru">Gelbooru</option>
+          <option value="twitter">Twitter</option>
         </select>
       </div>
       <div id="e621-search-container" class="e621-search-container" style="display: none;">
@@ -209,8 +214,66 @@
           <span>Search</span>
         </button>
       </div>
+      <div id="twitter-search-container" class="twitter-search-container" style="display: none;">
+        <input type="text" id="twitter-handle-input" placeholder="Search account (e.g. @ceno02)..." autocomplete="off" spellcheck="false">
+        <button id="btn-twitter-search" class="btn-twitter-load" title="Search and load account feed">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <span>Load</span>
+        </button>
+      </div>
+      <div id="twitter-import-container" class="twitter-import-container" style="display: none;">
+        <div class="twitter-import-row">
+          <input type="text" id="twitter-import-handle-input" placeholder="Your handle to import following (e.g. @myhandle)..." autocomplete="off" spellcheck="false">
+          <button id="btn-twitter-following" class="btn-twitter-following" title="Scrape and import followed accounts from this handle into Followed Accounts">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+              <circle cx="9" cy="7" r="4"></circle>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+            </svg>
+            <span>Import</span>
+          </button>
+        </div>
+        <div class="twitter-import-actions">
+          <button type="button" id="btn-twitter-file-import" class="btn-twitter-sub-action" title="Upload a file (.json, .csv, .txt, or Twitter archive following.js) with followed accounts">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+            <span>Upload File (.json / .csv / .txt)</span>
+          </button>
+          <button type="button" id="btn-twitter-paste-import" class="btn-twitter-sub-action" title="Paste a list of Twitter handles or text">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+            </svg>
+            <span>Paste List</span>
+          </button>
+          <button type="button" id="btn-twitter-export" class="btn-twitter-sub-action" title="Export / backup followed accounts to a JSON file">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span>Backup / Export</span>
+          </button>
+          <button type="button" id="btn-twitter-clear" class="btn-twitter-sub-action" title="Clear all saved followed accounts">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+            <span>Clear</span>
+          </button>
+        </div>
+        <input type="file" id="twitter-file-input" accept=".json,.js,.csv,.txt" style="display: none;">
+      </div>
       <div class="welcome-buttons">
         <button id="btn-latest">Latest Posts</button>
+        <button id="btn-following-feed" style="display: none;">Following Feed</button>
         <button id="btn-creators">Creator List</button>
         <button id="btn-e621-favorites" style="display: none;">My Favorites</button>
       </div>
@@ -266,6 +329,38 @@
             <button type="button" id="btn-e621-save-auth" class="e621-settings-btn">Save Account</button>
           </div>
           <div id="e621-auth-status" class="e621-auth-status"></div>
+        </div>
+      </div>
+
+      <!-- Twitter Settings & Instance Panel (Home Page) -->
+      <div id="twitter-account-panel" class="e621-account-panel" style="display: none;">
+        <div class="e621-account-panel-header">
+          <span class="e621-account-panel-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            </svg>
+            <span>Twitter / Teapawt Settings</span>
+          </span>
+          <span id="twitter-instance-status" style="font-size: 11px; opacity: 0.75; color: #1d9bf0;">Auto-Failover Active</span>
+        </div>
+
+        <div class="e621-account-form">
+          <label class="e621-field-label">
+            <span>Preferred Teapawt Instance</span>
+            <select id="setting-nitter-instance" class="twitter-instance-select">
+              <option value="teapaw.org">teapaw.org (Teapawt - Verified Open &amp; Fast)</option>
+              <option value="teapawt.org">teapawt.org (Teapawt - Verified Open)</option>
+              <option value="teapawt.net">teapawt.net (Teapawt - Verified Open)</option>
+              <option value="xitter.gq">xitter.gq (Teapawt - Mirror)</option>
+              <option value="nitter.gq">nitter.gq (Teapawt - Mirror)</option>
+            </select>
+          </label>
+          <div class="twitter-settings-hint">
+            Direct high-speed Twitter streaming via Teapawt. If the selected instance is busy, Paw Reader will automatically failover to the next healthy instance.
+          </div>
         </div>
       </div>
       
@@ -356,6 +451,44 @@
           </svg>
         </button>
       </div>
+      <button id="btn-sync-twitter-following" class="creator-sync-btn" title="Sync / Re-import followed accounts from Twitter" style="display: none;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <polyline points="1 20 1 14 7 14"></polyline>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+        </svg>
+        <span>Sync Following</span>
+      </button>
+      <button id="btn-sync-twitter-file" class="creator-sync-btn" title="Upload followed accounts file (.json, .csv, .txt)" style="display: none;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="17 8 12 3 7 8"></polyline>
+          <line x1="12" y1="3" x2="12" y2="15"></line>
+        </svg>
+        <span>Upload File</span>
+      </button>
+      <button id="btn-sync-twitter-paste" class="creator-sync-btn" title="Paste handle list" style="display: none;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+          <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+        </svg>
+        <span>Paste List</span>
+      </button>
+      <button id="btn-sync-twitter-export" class="creator-sync-btn" title="Export / backup followed accounts to JSON" style="display: none;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        <span>Backup / Export</span>
+      </button>
+      <button id="btn-sync-twitter-clear" class="creator-sync-btn" title="Clear all saved followed accounts" style="display: none;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+        <span>Clear</span>
+      </button>
       <div id="creator-service-filter" class="checkbox-container">
         <!-- populated dynamically -->
       </div>
@@ -385,7 +518,7 @@
       <button id="creator-sort-dir" title="Toggle sort direction" style="display: flex; align-items: center; justify-content: center;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg></button>
     </div>
     <div id="creator-pagination-top" class="pagination pagination-top"></div>
-    <div id="creators-loading" class="loading active"><span class="loading-spinner"></span><span>Loading creators...</span></div>
+    <div id="creators-loading" class="loading"><span class="loading-spinner"></span><span>Loading creators...</span></div>
     <div id="creators-list" class="creators-grid"></div>
     <div id="creator-pagination" class="pagination"></div>
   </div>
@@ -394,6 +527,34 @@
     <div id="feed" class="feed vertical">
     </div>
     <div id="feed-loading" class="loading"><span class="loading-spinner"></span><span>Loading...</span></div>
+  </div>
+
+  <!-- Twitter Bulk Import Modal -->
+  <div id="twitter-import-modal" class="twitter-import-modal-backdrop" style="display: none;">
+    <div class="twitter-import-modal-content">
+      <div class="twitter-import-modal-header">
+        <h3>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="color: #1d9bf0;">
+            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+          </svg>
+          Paste Followed Accounts
+        </h3>
+        <button type="button" id="btn-close-twitter-import-modal" class="twitter-import-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="twitter-import-modal-body">
+        <p style="margin: 0; font-size: 0.88rem; color: #8899a6; line-height: 1.4;">
+          Paste handles separated by commas, newlines, or spaces (e.g. <code>@ceno02, @Slimeanor</code>, or raw text containing handles).
+        </p>
+        <textarea id="twitter-paste-textarea" rows="8" placeholder="Paste handles here...&#10;@ceno02&#10;@Slimeanor&#10;@AtasticForReal" style="width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; color: #fff; padding: 10px; font-family: monospace; font-size: 0.9rem; resize: vertical; outline: none;"></textarea>
+        <div class="twitter-import-modal-footer">
+          <span id="twitter-paste-detected-count" style="font-size: 0.85rem; color: #1d9bf0; font-weight: 600;">0 handles detected</span>
+          <div style="display: flex; gap: 8px;">
+            <button type="button" id="btn-cancel-twitter-paste" class="btn-twitter-sub-action">Cancel</button>
+            <button type="button" id="btn-submit-twitter-paste" class="btn-twitter-following" style="padding: 6px 16px;">Import Accounts</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" crossorigin="anonymous"></script>

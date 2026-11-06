@@ -1,6 +1,6 @@
 import { PROXY_URL, state } from "./state.js";
 import { buildCreatorCard } from "./creators.js";
-import { resetFeed, fetchPosts, updateAllE621TagChips } from "./feed.js";
+import { resetFeed, fetchPosts, updateAllE621TagChips, restoreTwitterFeedSnapshot } from "./feed.js";
 import { escapeHtml } from "./utils.js";
 import { getE621Auth } from "./e621Auth.js";
 import { getGelbooruAuth } from "./gelbooruAuth.js";
@@ -166,24 +166,31 @@ export function updateSiteSpecificUI() {
       cum: "Coomer",
       e621: "e621",
       gelbooru: "Gelbooru",
+      twitter: "Twitter",
     };
     creatorsTitle.textContent = state.currentSite === "e621"
       ? "e621 Artists"
-      : (state.currentSite === "gelbooru" ? "Gelbooru Tags" : `${displayNames[state.currentSite] || "Selected"} creators`);
+      : (state.currentSite === "gelbooru" ? "Gelbooru Tags" : (state.currentSite === "twitter" ? "Followed Accounts" : `${displayNames[state.currentSite] || "Selected"} creators`));
   }
 
   const e621SearchContainer = document.getElementById("e621-search-container");
+  const twitterSearchContainer = document.getElementById("twitter-search-container");
+  const twitterImportContainer = document.getElementById("twitter-import-container");
   const inputE621Tag = document.getElementById("e621-tag-input");
+  const btnLatest = document.getElementById("btn-latest");
   const btnCreators = document.getElementById("btn-creators");
+  const btnFollowingFeed = document.getElementById("btn-following-feed");
   const btnE621Favorites = document.getElementById("btn-e621-favorites");
   const e621AccountPanel = document.getElementById("e621-account-panel");
   const gelbooruAccountPanel = document.getElementById("gelbooru-account-panel");
+  const twitterAccountPanel = document.getElementById("twitter-account-panel");
   const navBlacklist = document.getElementById("nav-blacklist");
   const blacklistMenu = document.getElementById("blacklist-menu");
   const auth = getE621Auth();
   const hasAccount = Boolean(auth && auth.username);
 
   const isBooru = state.currentSite === "e621" || state.currentSite === "gelbooru";
+  const isTwitter = state.currentSite === "twitter";
   const gelAuth = getGelbooruAuth();
   const hasGelAccount = Boolean(gelAuth && gelAuth.userId);
   const showFavorites = (state.currentSite === "e621" && hasAccount) || (state.currentSite === "gelbooru" && hasGelAccount);
@@ -195,7 +202,16 @@ export function updateSiteSpecificUI() {
   }
 
   // Universal search available on all sites
-  if (e621SearchContainer) e621SearchContainer.style.display = "flex";
+  if (isTwitter) {
+    if (e621SearchContainer) e621SearchContainer.style.display = "none";
+    if (twitterSearchContainer) twitterSearchContainer.style.display = "flex";
+    if (twitterImportContainer) twitterImportContainer.style.display = "flex";
+  } else {
+    if (e621SearchContainer) e621SearchContainer.style.display = "flex";
+    if (twitterSearchContainer) twitterSearchContainer.style.display = "none";
+    if (twitterImportContainer) twitterImportContainer.style.display = "none";
+  }
+
   if (inputE621Tag) {
     if (state.currentSite === "gelbooru") {
       inputE621Tag.placeholder = "Search tags (e.g. 1girl, rating:general, sort:random)...";
@@ -211,11 +227,26 @@ export function updateSiteSpecificUI() {
   }
 
   // Action buttons
+  if (btnLatest) {
+    if (isTwitter) {
+      btnLatest.style.display = "none";
+    } else {
+      btnLatest.style.display = "";
+      btnLatest.textContent = "Latest Posts";
+    }
+  }
+
+  if (btnFollowingFeed) {
+    btnFollowingFeed.style.display = isTwitter ? "" : "none";
+  }
+
   if (btnCreators) {
     if (state.currentSite === "gelbooru") {
       btnCreators.textContent = "Random Posts";
     } else if (state.currentSite === "e621") {
       btnCreators.textContent = "Popular Posts";
+    } else if (isTwitter) {
+      btnCreators.textContent = "Followed Accounts";
     } else {
       btnCreators.textContent = "Creator List";
     }
@@ -229,6 +260,7 @@ export function updateSiteSpecificUI() {
   // Account panels
   if (e621AccountPanel) e621AccountPanel.style.display = state.currentSite === "e621" ? "block" : "none";
   if (gelbooruAccountPanel) gelbooruAccountPanel.style.display = state.currentSite === "gelbooru" ? "block" : "none";
+  if (twitterAccountPanel) twitterAccountPanel.style.display = isTwitter ? "block" : "none";
 
   updateSourceSwitcher(state.currentSite);
 }
@@ -399,6 +431,58 @@ export function updateNavTabs(creator) {
     });
 
     navTabs.appendChild(form);
+    return;
+  } else if (state.currentSite === "twitter") {
+    navTabs.classList.remove("e621-search-mode");
+    const activeTab = state._twitterFeedType || "tweets";
+    const avail = state._twitterAvailableTabs || ["tweets", "with_replies", "media"];
+    
+    // Correct order: Tweets -> Tweets & Replies -> Media
+    const candidateTabs = [
+      { key: "tweets", label: "Tweets" },
+      { key: "with_replies", label: "Tweets & Replies" },
+      { key: "media", label: "Media" },
+    ];
+    if (avail.includes("articles")) {
+      candidateTabs.push({ key: "articles", label: "Articles" });
+    }
+
+    const twitterTabs = candidateTabs.filter((t) => avail.includes(t.key));
+    // If activeTab is not in available tabs, fallback to first available (default tweets)
+    const effectiveActive = twitterTabs.some((t) => t.key === activeTab) ? activeTab : (twitterTabs[0]?.key || "tweets");
+    state._twitterFeedType = effectiveActive;
+
+    twitterTabs.forEach((tab) => {
+      const btn = document.createElement("button");
+      btn.textContent = tab.label;
+      btn.style.flexShrink = "0";
+      if (tab.key === effectiveActive) {
+        btn.classList.add("active");
+        btn.style.setProperty("background", "rgba(29, 155, 240, 0.6)", "important");
+        btn.style.setProperty("color", "#fff", "important");
+        btn.style.boxShadow = "0 0 12px rgba(29, 155, 240, 0.4)";
+      } else {
+        btn.classList.remove("active");
+        btn.style.background = "";
+        btn.style.boxShadow = "";
+      }
+      btn.addEventListener("click", () => {
+        if (state._twitterFeedType === tab.key) return;
+        state._twitterFeedType = tab.key;
+        navTabs.querySelectorAll("button").forEach((b) => {
+          b.classList.remove("active");
+          b.style.background = "";
+          b.style.boxShadow = "";
+        });
+        btn.classList.add("active");
+        btn.style.setProperty("background", "rgba(29, 155, 240, 0.6)", "important");
+        btn.style.setProperty("color", "#fff", "important");
+        btn.style.boxShadow = "0 0 12px rgba(29, 155, 240, 0.4)";
+        resetFeed();
+        fetchPosts();
+      });
+      navTabs.appendChild(btn);
+    });
     return;
   } else {
     navTabs.classList.remove("e621-search-mode");
@@ -1188,8 +1272,23 @@ export function executeAppBack() {
 
   // 7. Feed view
   if (feedView && feedView.classList.contains("active")) {
-    const wasCreatorFeed = !!state.currentFeedCreatorName;
+    if (state.currentSite === "twitter" && state._twitterHistory && state._twitterHistory.length > 0) {
+      const prevEntry = state._twitterHistory.pop();
+      if (prevEntry) {
+        if (typeof prevEntry === "object" && prevEntry.cards) {
+          restoreTwitterFeedSnapshot(prevEntry);
+          return true;
+        } else if (typeof window.loadTwitterCreator === "function") {
+          window.loadTwitterCreator(prevEntry, true);
+          return true;
+        }
+      }
+    }
+    const origin = state._feedOriginView;
+    const wasCreatorFeed = origin === "creators" || (!origin && !!state.currentFeedCreatorName && state.currentSite !== "twitter");
     state.currentFeedCreatorName = null;
+    state._feedOriginView = null;
+    if (state._twitterHistory) state._twitterHistory = [];
     updateNavTabs(null);
     resetFeed();
 

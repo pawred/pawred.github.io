@@ -2,6 +2,7 @@
 // Handles normalization of raw post objects across platforms (Kemono, Pawchive, Coomer, e621, Gelbooru).
 
 import { state } from "./state.js";
+export { transformTwitterRssItem, transformTwitterHtmlItem } from "./twitter.js";
 
 export function normalizePost(post) {
   if (!post) return post;

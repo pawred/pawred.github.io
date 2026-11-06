@@ -2,6 +2,19 @@ import { PROXY_URL, state } from "./state.js";
 import { normalizePost, transformE621PostClient } from "./postNormalizer.js";
 export { normalizePost, transformE621PostClient };
 import {
+  fetchTwitterFeed,
+  fetchTwitterFollowingFeed,
+  resolveTwitterVideo,
+  resolveTwitterQuote,
+  getPreferredNitterHost,
+  fetchTwitterPostStats,
+  cleanTwitterHandle,
+  formatTwitterHandle,
+  resetTwitterFollowingFeedState,
+  getTwitterFollowingFeedState,
+  restoreTwitterFollowingFeedState
+} from "./twitter.js";
+import {
   formatBytes,
   getServiceColor,
   getMediaUrl,
@@ -419,6 +432,9 @@ export function resetFeed() {
   items.forEach((item) => detachMedia(item));
   feed.innerHTML = "";
   state.offset = 0;
+  state._twitterCursor = null;
+  state.seenPostIds = new Set();
+  resetTwitterFollowingFeedState();
   state.hasMore = true;
   state.isFetching = false;
   feedObserver.disconnect();
@@ -447,11 +463,11 @@ export async function loadMediaWithProgress(item) {
   if (item._isLoadingMedia) return;
   item._isLoadingMedia = true;
 
-  const url = item.dataset.url;
+  let url = item.dataset.url;
   const type = item.dataset.type;
   item._isDetached = false;
   const progressOverlay = item.querySelector(".media-progress");
-  const filename = item.dataset.originalName || (item.dataset.path || url).split("/").pop() || "media";
+  const filename = item.dataset.originalName || (item.dataset.path || url || "").split("/").pop() || "media";
 
   const triggerRetry = () => {
     delete item._videoRetryCount;
@@ -461,6 +477,63 @@ export async function loadMediaWithProgress(item) {
     item._isLoadingMedia = false;
     loadMediaWithProgress(item);
   };
+
+  if (type === "video" && (item.dataset.needsFxFetch === "true" || (!url && item.dataset.tweetId) || (url && url.includes("twitter_video_")))) {
+    const tweetId = item.dataset.tweetId;
+    const author = cleanTwitterHandle(item.dataset.author || "i");
+    if (tweetId) {
+      if (progressOverlay) renderMediaProgress(progressOverlay, "Resolving video stream...", null, filename, "", "");
+      try {
+        const resolved = await resolveTwitterVideo(author, tweetId);
+        if (resolved && resolved.url) {
+          url = resolved.url;
+          item.dataset.url = resolved.url;
+          item.dataset.needsFxFetch = "false";
+          if (resolved.thumbnail && !item.dataset.poster) {
+            item.dataset.poster = resolved.thumbnail;
+          }
+          if (resolved.stats && item._post) {
+            item._post.stats = resolved.stats;
+            item._post.likes = resolved.stats.likes;
+            item._post.retweets = resolved.stats.retweets;
+            item._post.replies = resolved.stats.replies;
+            item._post.views = resolved.stats.views;
+
+            const card = item.closest(".post-card");
+            if (card) {
+              const statItems = card.querySelectorAll(".twitter-stat-item span");
+              if (statItems.length >= 4) {
+                const formatStat = (num) => {
+                  if (!num || isNaN(num)) return "0";
+                  if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+                  if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "K";
+                  return num.toLocaleString();
+                };
+                statItems[0].textContent = formatStat(resolved.stats.replies);
+                statItems[1].textContent = formatStat(resolved.stats.retweets);
+                statItems[2].textContent = formatStat(resolved.stats.likes);
+                statItems[3].textContent = formatStat(resolved.stats.views);
+              }
+            }
+          }
+        } else {
+          showMediaUnavailableWarning(progressOverlay, { type, filename, errorStatus: "Video Unavailable", onRetry: triggerRetry });
+          item._isLoadingMedia = false;
+          return;
+        }
+      } catch (_) {
+        showMediaUnavailableWarning(progressOverlay, { type, filename, errorStatus: "Video Unavailable", onRetry: triggerRetry });
+        item._isLoadingMedia = false;
+        return;
+      }
+    }
+  }
+
+  if (type === "video" && (!url || url.includes("twitter_video_"))) {
+    showMediaUnavailableWarning(progressOverlay, { type, filename, errorStatus: "Video Unavailable", onRetry: triggerRetry });
+    item._isLoadingMedia = false;
+    return;
+  }
 
   if (deadMediaCache.has(url)) {
     showMediaUnavailableWarning(progressOverlay, { type, filename, errorStatus: "404", onRetry: triggerRetry });
@@ -887,6 +960,9 @@ export async function loadMediaWithProgress(item) {
       video.setAttribute("disablePictureInPicture", "true");
       video.setAttribute("disableRemotePlayback", "true");
       video.preload = "auto";
+      if (item.dataset.poster) {
+        video.poster = item.dataset.poster;
+      }
       video.controls = false;
       video.removeAttribute("controls");
     } else {
@@ -1010,6 +1086,16 @@ export async function loadMediaWithProgress(item) {
             video.load();
             return;
           }
+        }
+      }
+
+      if (state.currentSite === "twitter" && !item._triedDirectFallback) {
+        item._triedDirectFallback = true;
+        const cur = video.src || "";
+        if (cur && cur.includes("video.twimg.com") && !cur.includes(PROXY_URL)) {
+          video.src = `${PROXY_URL}/proxy?url=${encodeURIComponent(cur)}`;
+          video.load();
+          return;
         }
       }
 
@@ -1155,6 +1241,13 @@ export async function loadMediaWithProgress(item) {
             img.src = targetFallback;
             return;
           }
+        }
+      }
+      if (state.currentSite === "twitter" && !img.dataset.triedTwitterFallback) {
+        img.dataset.triedTwitterFallback = "true";
+        if (img.src && img.src.includes("name=orig")) {
+          img.src = img.src.replace(/([?&])name=orig(&|$)/, "$1").replace(/[?&]$/, "");
+          return;
         }
       }
       deadMediaCache.add(url);
@@ -1867,19 +1960,107 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
     authorEl.innerHTML = "";
     authorEl.style.display = "flex";
     authorEl.style.alignItems = "center";
+    authorEl.style.flexWrap = "wrap";
     authorEl.style.gap = "8px";
+
+    const isTwitter = post.service === "twitter" || state.currentSite === "twitter";
+
+    // Twitter Retweet Indicator Badge
+    if (isTwitter && post.isRetweet && post.retweetedBy) {
+      const rtBadge = document.createElement("div");
+      rtBadge.className = "twitter-retweet-badge";
+      rtBadge.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="17 1 21 5 17 9"></polyline>
+          <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+          <polyline points="7 23 3 19 7 15"></polyline>
+          <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+        </svg>
+        <span>${escapeHtml(post.retweetedBy)}</span>
+      `;
+      if (post.retweetedUser) {
+        rtBadge.style.cursor = "pointer";
+        rtBadge.title = `View @${post.retweetedUser}'s timeline`;
+        rtBadge.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof window.loadTwitterCreator === "function") {
+            window.loadTwitterCreator(post.retweetedUser);
+          }
+        });
+      }
+      authorEl.appendChild(rtBadge);
+    }
+
+    // Twitter Quote Indicator Badge
+    if (isTwitter && post.isQuote && post.quote) {
+      const qUser = post.quote.user || "";
+      const qAuthor = post.quote.authorName || (qUser ? `@${qUser}` : "");
+      const quoteLabel = qUser ? `Quoting @${qUser}` : (qAuthor ? `Quoting ${qAuthor}` : "Quote");
+      const qBadge = document.createElement("div");
+      qBadge.className = "twitter-quote-indicator-badge";
+      qBadge.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M4.583 17.321C3.553 16.227 3 15 3 13.011c0-3.5 2.457-6.637 6.03-8.188l.893 1.378c-3.335 1.804-3.987 4.145-4.247 5.621.537-.278 1.24-.375 1.929-.311 1.804.167 3.226 1.648 3.226 3.489a3.5 3.5 0 0 1-3.5 3.5c-1.073 0-2.099-.49-2.748-1.179zm10 0C13.553 16.227 13 15 13 13.011c0-3.5 2.457-6.637 6.03-8.188l.893 1.378c-3.335 1.804-3.987 4.145-4.247 5.621.537-.278 1.24-.375 1.929-.311 1.804.167 3.226 1.648 3.226 3.489a3.5 3.5 0 0 1-3.5 3.5c-1.073 0-2.099-.49-2.748-1.179z"></path>
+        </svg>
+        <span>${escapeHtml(quoteLabel)}</span>
+      `;
+      if (qUser) {
+        qBadge.style.cursor = "pointer";
+        qBadge.title = `View @${qUser}'s timeline`;
+        qBadge.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof window.loadTwitterCreator === "function") {
+            window.loadTwitterCreator(qUser);
+          }
+        });
+      }
+      authorEl.appendChild(qBadge);
+    }
 
     const creator = state.allCreators.find((c) => String(c.id) === String(post.user) && (!post.service || c.service === post.service));
     const displayName = post.authorName || (creator ? (creator.name || creator.displayName) : state.currentFeedCreatorName) || post.user || "Unknown";
     const creatorUrl = getServiceCreatorUrl(post.service, post.user, displayName);
+
+    const authorLinkRow = document.createElement("div");
+    authorLinkRow.style.display = "flex";
+    authorLinkRow.style.alignItems = "center";
+    authorLinkRow.style.gap = "8px";
+    if (isTwitter && (post.isRetweet || post.isQuote)) {
+      authorLinkRow.style.width = "100%";
+    }
 
     const authorLink = document.createElement("a");
     authorLink.className = "post-author-link";
     authorLink.href = creatorUrl;
     authorLink.target = "_blank";
     authorLink.rel = "noopener noreferrer";
-    authorLink.textContent = (post.service === "e621") ? `Artist: ${displayName}` : `Creator: ${displayName}`;
-    authorEl.appendChild(authorLink);
+
+    if (isTwitter) {
+      const handle = cleanTwitterHandle(post.user || (creator ? (creator.handle || creator.id) : ""));
+      let name = post.authorName || (creator ? (creator.name || creator.displayName) : "") || handle;
+      if (name.startsWith("@") && cleanTwitterHandle(name) === handle) {
+        name = handle;
+      }
+      authorLink.innerHTML = `<span class="twitter-author-name">${escapeHtml(name)}</span>${handle ? `<span class="twitter-author-handle" style="color: #8899a6; font-weight: normal; font-size: 0.88em; margin-left: 6px;">@${escapeHtml(handle)}</span>` : ""}`;
+      if (handle) {
+        authorLink.style.cursor = "pointer";
+        authorLink.title = `View @${handle}'s posts on Paw Reader`;
+        authorLink.addEventListener("click", (e) => {
+          if (e.ctrlKey || e.metaKey || e.button === 1) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof window.loadTwitterCreator === "function") {
+            window.loadTwitterCreator(handle);
+          }
+        });
+      }
+    } else {
+      const authorPrefix = (post.service === "e621") ? "Artist" : "Creator";
+      authorLink.textContent = `${authorPrefix}: ${displayName}`;
+    }
+    authorLinkRow.appendChild(authorLink);
 
     if (post.service) {
       const serviceIcon = document.createElement("img");
@@ -1916,7 +2097,7 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
         fallbackText.textContent = `(${post.service})`;
         fallbackText.style.opacity = "0.7";
         fallbackText.style.fontSize = "0.9em";
-        authorEl.appendChild(fallbackText);
+        authorLinkRow.appendChild(fallbackText);
       };
 
       const serviceLink = document.createElement("a");
@@ -1926,21 +2107,28 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
       serviceLink.style.display = "flex";
       serviceLink.style.alignItems = "center";
       serviceLink.appendChild(serviceIcon);
-      authorEl.appendChild(serviceLink);
+      authorLinkRow.appendChild(serviceLink);
     }
+
+    authorEl.appendChild(authorLinkRow);
   }
 
   if (titleEl) {
-    titleEl.innerHTML = "";
-    titleEl.style.display = "flex";
-    const postUrl = getServicePostUrl(post.service, post.user, post.id);
-    const titleLink = document.createElement("a");
-    titleLink.className = "post-title-link";
-    titleLink.href = postUrl;
-    titleLink.target = "_blank";
-    titleLink.rel = "noopener noreferrer";
-    titleLink.textContent = post.title || (post.id ? `Post #${post.id}` : "Untitled");
-    titleEl.appendChild(titleLink);
+    if (post.service === "twitter") {
+      titleEl.innerHTML = "";
+      titleEl.style.display = "none";
+    } else {
+      titleEl.innerHTML = "";
+      titleEl.style.display = "flex";
+      const postUrl = getServicePostUrl(post.service, post.user, post.id);
+      const titleLink = document.createElement("a");
+      titleLink.className = "post-title-link";
+      titleLink.href = postUrl;
+      titleLink.target = "_blank";
+      titleLink.rel = "noopener noreferrer";
+      titleLink.textContent = post.title || (post.id ? `Post #${post.id}` : "Untitled");
+      titleEl.appendChild(titleLink);
+    }
   }
 
   if (contentEl) {
@@ -1966,30 +2154,332 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
         }
       });
 
+      if (post.service === "twitter" || state.currentSite === "twitter") {
+        contentEl.classList.add("twitter-post-content");
+        const preferredHost = post.nitterHost || getPreferredNitterHost() || "teapaw.org";
+
+        tmpl.content.querySelectorAll("a").forEach((a) => {
+          const href = a.getAttribute("href") || "";
+          const txt = a.textContent.trim();
+
+          const mentionMatch = href.match(/^\/([a-zA-Z0-9_]{1,15})$/);
+          if (mentionMatch || (href.startsWith("/") && txt.startsWith("@"))) {
+            const userHandle = cleanTwitterHandle(mentionMatch ? mentionMatch[1] : txt);
+            if (userHandle) {
+              a.href = `https://${preferredHost}/${userHandle}`;
+              a.dataset.twitterUser = userHandle;
+              a.className = (a.className ? a.className + " " : "") + "twitter-mention-link";
+              a.title = `View @${userHandle} on Paw Reader (or Ctrl+click for Teapawt)`;
+              return;
+            }
+          }
+
+          if (href.startsWith("/search") || txt.startsWith("#")) {
+            const tagMatch = href.match(/q=%23([^&]+)/) || [null, txt.replace(/^#/, "")];
+            const tag = tagMatch[1];
+            if (tag) {
+              a.href = `https://${preferredHost}/search?q=%23${encodeURIComponent(tag)}`;
+              a.target = "_blank";
+              a.rel = "noopener noreferrer";
+              return;
+            }
+          }
+
+          if (href.startsWith("/")) {
+            a.href = `https://${preferredHost}${href}`;
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+          }
+        });
+      }
+
       cleanEmptyParagraphs(tmpl.content);
       contentEl.innerHTML = tmpl.innerHTML;
 
-      const hasText = !!contentEl.textContent.replace(/[\s\u200B-\u200D\uFEFF]+/g, "");
-      const hasMedia = !!contentEl.querySelector("img, video, audio, iframe, embed, object, svg, canvas");
-      let hasLink = false;
-      const links = contentEl.querySelectorAll("a");
-      for (const a of links) {
-        if (a.textContent.replace(/[\s\u200B-\u200D\uFEFF]+/g, "") || a.querySelector("img, video, audio, svg, canvas")) {
-          hasLink = true;
-          break;
-        }
+      if ((post.service === "twitter" || state.currentSite === "twitter") && !contentEl._hasTwitterMentionListener) {
+        contentEl._hasTwitterMentionListener = true;
+        contentEl.addEventListener("click", (e) => {
+          const mention = e.target.closest("a.twitter-mention-link, a[data-twitter-user]");
+          if (mention) {
+            if (e.ctrlKey || e.metaKey || e.button === 1) return;
+            const user = mention.dataset.twitterUser || cleanTwitterHandle(mention.textContent);
+            if (user) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (typeof window.loadTwitterCreator === "function") {
+                window.loadTwitterCreator(user);
+              }
+            }
+          }
+        });
       }
 
-      if (hasText || hasMedia || hasLink) {
-        contentEl.style.display = "block";
-      } else {
-        contentEl.innerHTML = "";
-        contentEl.style.display = "none";
+      // Allow clicking Twitter post content area to open the original post on Teapawt
+      if ((post.service === "twitter" || state.currentSite === "twitter") && !contentEl._hasTwitterContentClickListener) {
+        contentEl._hasTwitterContentClickListener = true;
+        contentEl.addEventListener("click", (e) => {
+          if (e.target.closest("a, button, .twitter-quoted-card")) return;
+          const sel = window.getSelection();
+          if (sel && sel.toString().trim().length > 0) return;
+          const targetUrl = post.link || getServicePostUrl(post.service || "twitter", post.user, post.tweetId || post.id);
+          if (targetUrl) {
+            window.open(targetUrl, "_blank", "noopener,noreferrer");
+          }
+        });
       }
+    }
+
+    // Twitter Quoted Tweet Card
+    if ((post.service === "twitter" || state.currentSite === "twitter") && post.quote) {
+      const quoteCard = document.createElement("div");
+      quoteCard.className = "twitter-quoted-card";
+      const preferredHost = post.nitterHost || getPreferredNitterHost() || "teapaw.org";
+
+      const renderQuoteContent = (q) => {
+        quoteCard.classList.remove("twitter-quoted-unavailable");
+        quoteCard.innerHTML = `
+          <div class="twitter-quoted-header">
+            <div class="twitter-quote-badge">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M4.583 17.321C3.553 16.227 3 15 3 13.011c0-3.5 2.457-6.637 6.03-8.188l.893 1.378c-3.335 1.804-3.987 4.145-4.247 5.621.537-.278 1.24-.375 1.929-.311 1.804.167 3.226 1.648 3.226 3.489a3.5 3.5 0 0 1-3.5 3.5c-1.073 0-2.099-.49-2.748-1.179zm10 0C13.553 16.227 13 15 13 13.011c0-3.5 2.457-6.637 6.03-8.188l.893 1.378c-3.335 1.804-3.987 4.145-4.247 5.621.537-.278 1.24-.375 1.929-.311 1.804.167 3.226 1.648 3.226 3.489a3.5 3.5 0 0 1-3.5 3.5c-1.073 0-2.099-.49-2.748-1.179z"></path>
+              </svg>
+              <span>Quote</span>
+            </div>
+            <div class="twitter-quoted-author">
+              ${q.avatar ? `<img class="twitter-quoted-avatar" src="${q.avatar}" alt="" loading="lazy">` : ""}
+              <span class="twitter-quoted-fullname">${escapeHtml(q.authorName || "")}</span>
+              <span class="twitter-quoted-handle">${q.user ? `@${escapeHtml(q.user)}` : ""}</span>
+              ${q.date ? `<span class="twitter-quoted-date">· ${escapeHtml(q.date)}</span>` : ""}
+            </div>
+          </div>
+          ${q.text ? `<div class="twitter-quoted-body">${q.text}</div>` : ""}
+          ${q.mediaUrl && !post._quoteMediaAdopted && (!post.file && (!post.attachments || post.attachments.length === 0)) ? `
+            <div class="twitter-quoted-media">
+              <img src="${q.mediaUrl}" alt="" loading="lazy">
+            </div>
+          ` : ""}
+        `;
+
+        quoteCard.querySelectorAll("a").forEach((a) => {
+          const href = a.getAttribute("href") || "";
+          if (href.startsWith("/")) {
+            const m = href.match(/^\/([a-zA-Z0-9_]{1,15})$/);
+            if (m) {
+              a.href = `https://${preferredHost}/${m[1]}`;
+              a.dataset.twitterUser = m[1];
+              a.className = "twitter-mention-link";
+            } else {
+              a.href = `https://${preferredHost}${href}`;
+              a.target = "_blank";
+              a.rel = "noopener noreferrer";
+            }
+          }
+        });
+      };
+
+      if (post.quote.isUnavailable && post.quote.id) {
+        quoteCard.classList.add("twitter-quoted-unavailable");
+        quoteCard.innerHTML = `<span style="opacity: 0.7;">Loading quoted post...</span>`;
+        resolveTwitterQuote(post.quote.id, post.nitterHost).then((resolved) => {
+          if (resolved) {
+            post.quote = resolved;
+            renderQuoteContent(resolved);
+          } else {
+            const fallbackLink = post.quote.link || `https://${preferredHost}/i/status/${post.quote.id}`;
+            quoteCard.innerHTML = `<a href="${fallbackLink}" target="_blank" rel="noopener noreferrer" style="color: inherit; opacity: 0.8; text-decoration: underline;">View quoted post #${post.quote.id} on Teapawt</a>`;
+          }
+        }).catch(() => {
+          const fallbackLink = post.quote.link || `https://${preferredHost}/i/status/${post.quote.id}`;
+          quoteCard.innerHTML = `<a href="${fallbackLink}" target="_blank" rel="noopener noreferrer" style="color: inherit; opacity: 0.8; text-decoration: underline;">View quoted post #${post.quote.id} on Teapawt</a>`;
+        });
+      } else if (post.quote.isUnavailable) {
+        quoteCard.classList.add("twitter-quoted-unavailable");
+        quoteCard.innerHTML = `<span style="opacity: 0.7;">This quoted post is unavailable.</span>`;
+      } else {
+        renderQuoteContent(post.quote);
+      }
+
+      quoteCard.addEventListener("click", (e) => {
+        const mention = e.target.closest("a.twitter-mention-link, a[data-twitter-user]");
+        if (mention) {
+          const u = mention.dataset.twitterUser || cleanTwitterHandle(mention.textContent);
+          if (u && typeof window.loadTwitterCreator === "function") {
+            e.preventDefault();
+            e.stopPropagation();
+            window.loadTwitterCreator(u);
+            return;
+          }
+        }
+        if (e.target.closest("a")) return;
+        e.stopPropagation();
+        if (post.quote.user && typeof window.loadTwitterCreator === "function") {
+          window.loadTwitterCreator(post.quote.user);
+        } else if (post.quote.link) {
+          window.open(post.quote.link, "_blank", "noopener,noreferrer");
+        }
+      });
+
+      contentEl.appendChild(quoteCard);
+    }
+
+    const hasText = !!contentEl.textContent.replace(/[\s\u200B-\u200D\uFEFF]+/g, "");
+    const hasMedia = !!contentEl.querySelector("img, video, audio, iframe, embed, object, svg, canvas");
+    let hasLink = false;
+    const links = contentEl.querySelectorAll("a");
+    for (const a of links) {
+      if (a.textContent.replace(/[\s\u200B-\u200D\uFEFF]+/g, "") || a.querySelector("img, video, audio, svg, canvas")) {
+        hasLink = true;
+        break;
+      }
+    }
+    const hasQuote = !!contentEl.querySelector(".twitter-quoted-card");
+
+    if (hasText || hasMedia || hasLink || hasQuote) {
+      contentEl.style.display = "block";
     } else {
+      contentEl.innerHTML = "";
       contentEl.style.display = "none";
     }
+
+    if (post.service === "twitter" || state.currentSite === "twitter") {
+      const statsContainer = document.createElement("div");
+      statsContainer.className = "twitter-post-stats";
+      let replies = post.replies || post.stats?.replies || 0;
+      let retweets = post.retweets || post.stats?.retweets || 0;
+      let likes = post.likes || post.stats?.likes || 0;
+      let views = post.views || post.stats?.views || 0;
+
+      const formatStat = (num) => {
+        if (!num || isNaN(num)) return "0";
+        if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+        if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "K";
+        return num.toLocaleString();
+      };
+
+      let formattedDate = "";
+      let fullDateStr = "";
+      if (post.originalPublished || post.published) {
+        try {
+          const d = new Date(post.originalPublished || post.published);
+          if (!isNaN(d.getTime())) {
+            fullDateStr = d.toLocaleString();
+            formattedDate = d.toLocaleDateString(undefined, {
+              month: "short",
+              day: "numeric",
+              year: d.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined
+            });
+          }
+        } catch (_) {}
+      }
+
+      statsContainer.innerHTML = `
+        <div class="twitter-stat-item" title="Comments">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
+          <span class="stat-replies">${formatStat(replies)}</span>
+        </div>
+        <div class="twitter-stat-item" title="Retweets">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
+          <span class="stat-retweets">${formatStat(retweets)}</span>
+        </div>
+        <div class="twitter-stat-item" title="Likes">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+          <span class="stat-likes">${formatStat(likes)}</span>
+        </div>
+        <div class="twitter-stat-item" title="Views">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          <span class="stat-views">${formatStat(views)}</span>
+        </div>
+        ${formattedDate ? `
+          <div class="twitter-stat-item twitter-stat-date" style="margin-left: auto; opacity: 0.85; font-size: 0.82rem;" title="${escapeHtml(fullDateStr || formattedDate)}">
+            <span>${escapeHtml(formattedDate)}</span>
+          </div>
+        ` : ""}
+      `;
+
+      // If stats are 0, lazy hydrate from FixTweet API
+      if (replies === 0 && retweets === 0 && likes === 0 && views === 0 && !post._hydratingStats && (post.tweetId || post.id)) {
+        post._hydratingStats = true;
+        fetchTwitterPostStats(post.user, post.tweetId || post.id).then((st) => {
+          if (st) {
+            post.replies = st.replies;
+            post.retweets = st.retweets;
+            post.likes = st.likes;
+            post.views = st.views;
+            post.stats = st;
+            const elR = statsContainer.querySelector(".stat-replies");
+            const elRt = statsContainer.querySelector(".stat-retweets");
+            const elL = statsContainer.querySelector(".stat-likes");
+            const elV = statsContainer.querySelector(".stat-views");
+            if (elR) elR.textContent = formatStat(st.replies);
+            if (elRt) elRt.textContent = formatStat(st.retweets);
+            if (elL) elL.textContent = formatStat(st.likes);
+            if (elV) elV.textContent = formatStat(st.views);
+          }
+        }).catch(() => {});
+      }
+
+      contentEl.appendChild(statsContainer);
+      contentEl.style.display = "block";
+    }
   }
+}
+
+export function restoreTwitterFeedSnapshot(snapshot) {
+  if (!snapshot) return;
+  const feedEl = document.getElementById("feed");
+  if (!feedEl) return;
+
+  if (state.feedAbortController) {
+    try {
+      state.feedAbortController.abort();
+    } catch (_) {}
+    state.feedAbortController = null;
+  }
+  state.feedFetchSeq = (state.feedFetchSeq || 0) + 1;
+
+  feedEl.innerHTML = "";
+  if (Array.isArray(snapshot.cards)) {
+    snapshot.cards.forEach((card) => {
+      feedEl.appendChild(card);
+    });
+  }
+
+  feedEl.scrollTop = snapshot.scrollTop || 0;
+
+  state._twitterFeedMode = snapshot.feedMode || "creator";
+  state._twitterFeedType = snapshot.feedType || "tweets";
+  state._twitterCursor = snapshot.cursor || null;
+  state.offset = snapshot.offset || 0;
+  state.hasMore = snapshot.hasMore !== undefined ? snapshot.hasMore : true;
+  state.seenPostIds = snapshot.seenPostIds ? new Set(snapshot.seenPostIds) : new Set();
+  state._feedOriginView = snapshot.originView || "welcome";
+  state.currentFeedCreatorName = snapshot.creatorName || null;
+
+  if (snapshot.feedMode === "following") {
+    state.currentFeedEndpoint = "https://twitter.com/following";
+    updateNavTabs({ name: "Following Feed", id: "following", service: "twitter" });
+    if (snapshot.followingState) {
+      restoreTwitterFollowingFeedState(snapshot.followingState);
+    }
+    const twitterHandleInput = document.getElementById("twitter-handle-input");
+    if (twitterHandleInput) twitterHandleInput.value = "";
+  } else {
+    const handle = snapshot.creatorHandle;
+    state.currentFeedEndpoint = `https://twitter.com/${handle}`;
+    updateNavTabs({ name: snapshot.creatorName || formatTwitterHandle(handle), id: handle, service: "twitter" });
+    const twitterHandleInput = document.getElementById("twitter-handle-input");
+    if (twitterHandleInput) twitterHandleInput.value = formatTwitterHandle(handle);
+  }
+
+  const navBack = document.getElementById("nav-back");
+  if (navBack) navBack.classList.remove("hidden");
+
+  // Re-observe restored media items
+  const mediaItems = feedEl.querySelectorAll(".media-item");
+  mediaItems.forEach((item) => mediaObserver.observe(item));
+
+  const videos = feedEl.querySelectorAll("video");
+  videos.forEach((video) => playbackObserver.observe(video));
 }
 
 export function getCurrentGalleryPost() {
@@ -2197,6 +2687,10 @@ export function createPostCard(rawPost) {
     }
   }
 
+  if (post.service === "twitter" && (!post.user || post.user === "Unknown" || !cleanTwitterHandle(post.user))) {
+    return null;
+  }
+
   const card = document.createElement("div");
   card.className = "post-card";
   card._post = post;
@@ -2227,12 +2721,20 @@ export function createPostCard(rawPost) {
       const fileName = (fileObj.name || fileObj.path.split("/").pop()).toLowerCase();
       if (/(^|[\?&]f=)cover\.(jpe?g|png|webp|gif|bmp)/i.test(fileName)) return;
     }
-    const ext = ((fileObj.name || fileObj.path).split(".").pop() || "jpg").toLowerCase();
+    const cleanPath = (fileObj.path || "").split("?")[0].split("#")[0];
+    const ext = ((fileObj.name || cleanPath).split(".").pop() || "jpg").toLowerCase();
     if (supportedExts.includes(ext) && !allMedia.some((m) => m.path === fileObj.path)) {
       allMedia.push({
         path: fileObj.path,
         name: fileObj.name || fileObj.path.split("/").pop(),
         isUnimported: !!fileObj.isUnimported || fileObj.path.includes("/unimported."),
+        isVideo: !!fileObj.isVideo || ["mp4", "webm", "mov"].includes(ext),
+        needsFxFetch: !!fileObj.needsFxFetch,
+        tweetId: fileObj.tweetId || post.tweetId || post.id,
+        user: fileObj.user || post.user,
+        poster: fileObj.poster || "",
+        directUrl: fileObj.directUrl || "",
+        url: fileObj.url || ""
       });
     }
   }
@@ -2383,13 +2885,29 @@ export function createPostCard(rawPost) {
   renderPostInfoSection(post, author, title, content);
 
   if (allMedia.length === 0) {
+    const isTwitter = post.service === "twitter";
+    const textContent = (cleanContent || post.content || post.substring || "")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/&[a-z0-9#]+;/gi, " ")
+      .trim();
+    const hasQuote = Boolean(post.quote);
+    if (!textContent && !hasQuote && (!post.title || isTwitter)) {
+      return null;
+    }
+    if (isTwitter && (!post.user || post.user === "Unknown")) {
+      return null;
+    }
+
     const textCard = document.createElement("div");
-    textCard.className = "post-text-card";
+    textCard.className = isTwitter ? "post-text-card twitter-text-card" : "post-text-card";
     const inner = document.createElement("div");
-    inner.className = "post-text-inner";
+    inner.className = isTwitter ? "post-text-inner twitter-text-inner" : "post-text-inner";
     inner.appendChild(author);
-    inner.appendChild(title);
+    if (!isTwitter) {
+      inner.appendChild(title);
+    }
     inner.appendChild(content);
+
     textCard.appendChild(inner);
     card.appendChild(textCard);
   } else {
@@ -2429,7 +2947,21 @@ export function createPostCard(rawPost) {
         const isAudio = ["mp3", "ogg", "wav", "m4a"].includes(ext);
         const isGif = ext === "gif";
 
-        item.dataset.url = getMediaUrl(mediaPath);
+        if (mediaObj.needsFxFetch || (post.service === "twitter" && isVideo && !mediaObj.directUrl && (!mediaPath || mediaPath.includes("twitter_video_")))) {
+          item.dataset.needsFxFetch = "true";
+          item.dataset.tweetId = mediaObj.tweetId || post.tweetId || post.id || "";
+          item.dataset.author = mediaObj.user || post.user || "";
+          item.dataset.url = "";
+          if (mediaObj.poster) {
+            item.dataset.poster = mediaObj.poster;
+          }
+        } else {
+          item.dataset.needsFxFetch = "false";
+          item.dataset.url = mediaObj.url || getMediaUrl(mediaPath);
+          if (mediaObj.poster) {
+            item.dataset.poster = mediaObj.poster;
+          }
+        }
         item.dataset.path = mediaPath;
         item.dataset.isUnimported = mediaObj.isUnimported ? "true" : "false";
         item.dataset.type = ext === "zip" ? "zip" : isVideo ? "video" : isAudio ? "audio" : isGif ? "gif" : "image";
@@ -2837,103 +3369,128 @@ export async function fetchPosts() {
     const isFancards = state.currentFeedEndpoint && state.currentFeedEndpoint.includes("/fancards");
     const isTags = state.currentFeedEndpoint && state.currentFeedEndpoint.includes("/tags");
 
-    let res;
-    if (state.currentSite === "e621") {
-      const e621Headers = getE621Headers();
-      const artistMatch = state.currentFeedEndpoint.match(/\/api\/v1\/e621\/user\/([^\/]+)\/posts/);
-      const artistTag = artistMatch ? decodeURIComponent(artistMatch[1]) : "";
-      const incomingUrl = new URL(state.currentFeedEndpoint, window.location.href);
-      const isPopularEndpoint = state.currentFeedEndpoint.includes("/popular");
-      const q = incomingUrl.searchParams.get("tags") || incomingUrl.searchParams.get("q") || incomingUrl.searchParams.get("tag") || (isPopularEndpoint ? "order:rank" : "");
-      const effectiveTags = artistTag || q;
-      const page = Math.max(1, Math.floor(state.offset / 50) + 1);
-
-      const directUrl = new URL("https://e621.net/posts.json");
-      directUrl.searchParams.set("page", String(page));
-      directUrl.searchParams.set("limit", "50");
-      if (effectiveTags) {
-        directUrl.searchParams.set("tags", effectiveTags);
-      }
-
-      try {
-        const directRes = await fetch(directUrl.toString(), { headers: e621Headers, signal });
-        if (directRes && directRes.ok) {
-          res = directRes;
-        }
-      } catch (_) {}
-
-      // Fallback via proxy worker if direct fetch failed
-      if (!res || !res.ok) {
-        if (signal.aborted) return;
-        let proxyUrl = state.currentFeedEndpoint;
-        const separator = proxyUrl.includes("?") ? "&" : "?";
-        proxyUrl += `${separator}o=${state.offset}`;
-        try {
-          res = await fetchWithRetry(proxyUrl, { headers: e621Headers, signal });
-        } catch (_) {}
-      }
-    } else {
-      let url = state.currentFeedEndpoint;
-      if (!isSinglePageFeed) {
-        const separator = url.includes("?") ? "&" : "?";
-        url += `${separator}o=${state.offset}`;
-      }
-
-      const gelHeaders = state.currentSite === "gelbooru" ? getGelbooruHeaders() : {};
-      const fetchOptions = { signal, ...(Object.keys(gelHeaders).length ? { headers: gelHeaders } : {}) };
-
-      let attempts = 0;
-      while (attempts < 3) {
-        attempts++;
-        try {
-          res = await fetchWithRetry(url, fetchOptions);
-          break;
-        } catch (e) {
-          if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
-          if (attempts < 3) {
-            await new Promise((r) => setTimeout(r, 1000));
-            updateFeedLoading();
-            continue;
-          }
-          throw e;
-        }
-      }
-    }
-
-    if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
-
-    if (!res || !res.ok) {
-      if (res && res.status === 401 && state.currentSite === "gelbooru") {
-        throw new Error("Gelbooru API authentication required (401). Please add your Gelbooru User ID and API Key in Cloudflare Worker secrets or the Gelbooru Account panel on the home page.");
-      }
-      throw new Error("Failed to fetch: " + (res ? `${res.status} ${res.statusText}` : "timeout"));
-    }
-
-    let posts = await res.json();
-    if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
-
+    let posts;
     let rawBatchCount = 0;
-    if (state.currentSite === "e621" && posts && Array.isArray(posts.posts)) {
-      rawBatchCount = posts.posts.length;
-      posts = posts.posts.map(transformE621PostClient);
-      if (isE621BlacklistEnabled()) {
-        const rules = parseBlacklist(getE621Blacklist());
-        if (rules.length > 0) {
-          posts = posts.filter((p) => !isPostBlacklisted(p, rules));
+
+    if (state.currentSite === "twitter") {
+      const isFollowingFeed = state._twitterFeedMode === "following";
+      const feedType = state._twitterFeedType || "tweets";
+      let result;
+      if (isFollowingFeed) {
+        result = await fetchTwitterFollowingFeed(state._twitterCursor || 0, signal, feedType);
+      } else {
+        const user = cleanTwitterHandle(state.currentFeedCreatorName || "elonmusk");
+        result = await fetchTwitterFeed(user, state._twitterCursor, signal, feedType);
+        if (result.detectedTabs && result.detectedTabs.length > 0) {
+          state._twitterAvailableTabs = result.detectedTabs;
+          updateNavTabs({ name: formatTwitterHandle(user), id: user, service: "twitter" });
         }
       }
-    } else if (posts && Array.isArray(posts.posts)) {
-      rawBatchCount = posts.posts.length;
-      posts = posts.posts;
-    } else if (!Array.isArray(posts)) {
-      posts = posts.announcements || posts.dms || posts.fancards || [];
+      if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
+      state._twitterCursor = result.nextCursor;
+      if (!result.nextCursor) {
+        state.hasMore = false;
+      }
+      posts = result.posts || [];
       rawBatchCount = posts.length;
     } else {
-      rawBatchCount = posts.length;
-      if ((state.currentSite === "e621" || state.currentSite === "gelbooru") && isE621BlacklistEnabled()) {
-        const rules = parseBlacklist(getE621Blacklist());
-        if (rules.length > 0) {
-          posts = posts.filter((p) => !isPostBlacklisted(p, rules));
+      let res;
+      if (state.currentSite === "e621") {
+        const e621Headers = getE621Headers();
+        const artistMatch = state.currentFeedEndpoint.match(/\/api\/v1\/e621\/user\/([^\/]+)\/posts/);
+        const artistTag = artistMatch ? decodeURIComponent(artistMatch[1]) : "";
+        const incomingUrl = new URL(state.currentFeedEndpoint, window.location.href);
+        const isPopularEndpoint = state.currentFeedEndpoint.includes("/popular");
+        const q = incomingUrl.searchParams.get("tags") || incomingUrl.searchParams.get("q") || incomingUrl.searchParams.get("tag") || (isPopularEndpoint ? "order:rank" : "");
+        const effectiveTags = artistTag || q;
+        const page = Math.max(1, Math.floor(state.offset / 50) + 1);
+
+        const directUrl = new URL("https://e621.net/posts.json");
+        directUrl.searchParams.set("page", String(page));
+        directUrl.searchParams.set("limit", "50");
+        if (effectiveTags) {
+          directUrl.searchParams.set("tags", effectiveTags);
+        }
+
+        try {
+          const directRes = await fetch(directUrl.toString(), { headers: e621Headers, signal });
+          if (directRes && directRes.ok) {
+            res = directRes;
+          }
+        } catch (_) {}
+
+        // Fallback via proxy worker if direct fetch failed
+        if (!res || !res.ok) {
+          if (signal.aborted) return;
+          let proxyUrl = state.currentFeedEndpoint;
+          const separator = proxyUrl.includes("?") ? "&" : "?";
+          proxyUrl += `${separator}o=${state.offset}`;
+          try {
+            res = await fetchWithRetry(proxyUrl, { headers: e621Headers, signal });
+          } catch (_) {}
+        }
+      } else {
+        let url = state.currentFeedEndpoint;
+        if (!isSinglePageFeed) {
+          const separator = url.includes("?") ? "&" : "?";
+          url += `${separator}o=${state.offset}`;
+        }
+
+        const gelHeaders = state.currentSite === "gelbooru" ? getGelbooruHeaders() : {};
+        const fetchOptions = { signal, ...(Object.keys(gelHeaders).length ? { headers: gelHeaders } : {}) };
+
+        let attempts = 0;
+        while (attempts < 3) {
+          attempts++;
+          try {
+            res = await fetchWithRetry(url, fetchOptions);
+            break;
+          } catch (e) {
+            if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
+            if (attempts < 3) {
+              await new Promise((r) => setTimeout(r, 1000));
+              updateFeedLoading();
+              continue;
+            }
+            throw e;
+          }
+        }
+      }
+
+      if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
+
+      if (!res || !res.ok) {
+        if (res && res.status === 401 && state.currentSite === "gelbooru") {
+          throw new Error("Gelbooru API authentication required (401). Please add your Gelbooru User ID and API Key in Cloudflare Worker secrets or the Gelbooru Account panel on the home page.");
+        }
+        throw new Error("Failed to fetch: " + (res ? `${res.status} ${res.statusText}` : "timeout"));
+      }
+
+      posts = await res.json();
+      if (signal.aborted || thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
+
+      if (state.currentSite === "e621" && posts && Array.isArray(posts.posts)) {
+        rawBatchCount = posts.posts.length;
+        posts = posts.posts.map(transformE621PostClient);
+        if (isE621BlacklistEnabled()) {
+          const rules = parseBlacklist(getE621Blacklist());
+          if (rules.length > 0) {
+            posts = posts.filter((p) => !isPostBlacklisted(p, rules));
+          }
+        }
+      } else if (posts && Array.isArray(posts.posts)) {
+        rawBatchCount = posts.posts.length;
+        posts = posts.posts;
+      } else if (!Array.isArray(posts)) {
+        posts = posts.announcements || posts.dms || posts.fancards || [];
+        rawBatchCount = posts.length;
+      } else {
+        rawBatchCount = posts.length;
+        if ((state.currentSite === "e621" || state.currentSite === "gelbooru") && isE621BlacklistEnabled()) {
+          const rules = parseBlacklist(getE621Blacklist());
+          if (rules.length > 0) {
+            posts = posts.filter((p) => !isPostBlacklisted(p, rules));
+          }
         }
       }
     }
@@ -2946,6 +3503,15 @@ export async function fetchPosts() {
         return;
       }
       state.hasMore = false;
+      if (state.currentSite === "twitter" && feed && feed.children.length === 0) {
+        feed.innerHTML = `
+          <div class="twitter-empty-feed" style="grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 70px 20px; color: #8899a6; text-align: center;">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.5; margin-bottom: 14px;"><circle cx="12" cy="12" r="10"></circle><line x1="8" y1="12" x2="16" y2="12"></line></svg>
+            <div style="font-size: 1.15rem; font-weight: 600; color: #fff; margin-bottom: 6px;">No posts found</div>
+            <div style="font-size: 0.9rem; max-width: 320px; line-height: 1.4;">This account has no tweets or media available in this section.</div>
+          </div>
+        `;
+      }
     } else {
       const catName = isAnnouncements ? "announcements" : isFancards ? "fancards" : "posts";
       updateFeedLoading(`Rendering ${posts.length} ${catName}...`);
@@ -2958,6 +3524,12 @@ export async function fetchPosts() {
       posts.forEach((rawPost) => {
         if (thisSeq !== state.feedFetchSeq || state.currentSite !== requestedSite) return;
         const post = normalizePost(rawPost);
+        const pId = post.tweetId || post.id;
+        if (pId) {
+          if (!state.seenPostIds) state.seenPostIds = new Set();
+          if (state.seenPostIds.has(pId)) return;
+          state.seenPostIds.add(pId);
+        }
         const card = createPostCard(post);
         if (card) {
           feed.appendChild(card);

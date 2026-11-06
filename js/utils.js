@@ -144,6 +144,7 @@ export function getServiceColor(service) {
   if (s === "fantia") return "linear-gradient(to right, #8CC13F, #E1097F, #8D2680, #00A098, #383877, #F05B26)";
   if (s === "e621") return "#00549e";
   if (s === "gelbooru") return "#006ffa";
+  if (s === "twitter") return "#1d9bf0";
   return "#222";
 }
 
@@ -152,6 +153,15 @@ export function getSiteDomain() {
   if (state.currentSite === "cum") return "cum.st";
   if (state.currentSite === "e621") return "e621.net";
   if (state.currentSite === "gelbooru") return "gelbooru.com";
+  if (state.currentSite === "twitter") {
+    try {
+      if (typeof localStorage !== "undefined") {
+        const saved = localStorage.getItem("paw_nitter_instance");
+        if (saved) return saved;
+      }
+    } catch (_) {}
+    return "teapaw.org";
+  }
   return "pawchive.pw";
 }
 
@@ -159,6 +169,9 @@ export function getServiceCreatorUrl(service, userId) {
   const domain = getSiteDomain();
   const s = encodeURIComponent((service || "").toLowerCase());
   const id = encodeURIComponent(userId || "");
+  if (state.currentSite === "twitter" || s === "twitter") {
+    return `https://${domain}/${id}`;
+  }
   if (state.currentSite === "e621") {
     return `https://${domain}/posts?tags=${id}`;
   }
@@ -177,6 +190,9 @@ export function getServicePostUrl(service, userId, postId) {
   const uid = encodeURIComponent(userId || "");
   const pid = encodeURIComponent(postId || "");
 
+  if (state.currentSite === "twitter" || s === "twitter") {
+    return `https://${domain}/${uid}/status/${pid}`;
+  }
   if (state.currentSite === "e621") {
     return `https://${domain}/posts/${pid}`;
   }
@@ -230,6 +246,9 @@ export function getMediaUrl(path) {
   }
   if (path.startsWith("http://") || path.startsWith("https://")) {
     return `${PROXY_URL}/proxy?url=${encodeURIComponent(path)}`;
+  }
+  if (state.currentSite === "twitter") {
+    return path;
   }
   if (state.currentSite === "gelbooru") {
     return `${PROXY_URL}/gelbooru/file/${path.replace(/^\/+/, '')}`;

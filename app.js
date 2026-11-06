@@ -79,6 +79,19 @@ import {
 } from './js/e621Auth.js';
 import { getGelbooruAuth, saveGelbooruAuth } from './js/gelbooruAuth.js';
 import { attachTagAutocomplete } from './js/autocomplete.js';
+import {
+  getPreferredNitterHost,
+  setPreferredNitterHost,
+  fetchTwitterFollowing,
+  saveTwitterFollowing,
+  clearTwitterFollowing,
+  getSavedTwitterFollowing,
+  parseTwitterFollowingInput,
+  cleanTwitterHandle,
+  formatTwitterHandle,
+  isValidTwitterHandle,
+  getTwitterFollowingFeedState
+} from './js/twitter.js';
 
 window.pawAnimationsDisabled = localStorage.getItem('paw_animations_disabled') === 'true';
 window.pawAutoDownloadZip = localStorage.getItem('paw_auto_download_zip') === 'true';
@@ -587,12 +600,47 @@ const btnLatest = document.getElementById('btn-latest');
 if (btnLatest) {
   btnLatest.addEventListener('click', () => {
     resetFeed();
+    if (state.currentSite === 'twitter') {
+      const inputEl = document.getElementById('twitter-handle-input');
+      const raw = inputEl ? inputEl.value : '';
+      const handle = cleanTwitterHandle(raw) || 'elonmusk';
+      state._feedOriginView = 'welcome';
+      state._twitterFeedMode = 'creator';
+      state._twitterFeedType = 'tweets';
+      state.currentFeedEndpoint = `https://twitter.com/${handle}`;
+      state.currentFeedCreatorName = formatTwitterHandle(handle);
+      updateNavTabs({ name: formatTwitterHandle(handle), id: handle, service: 'twitter' });
+      if (navBack) navBack.classList.remove('hidden');
+      showView(feedView, true);
+      fetchPosts();
+      return;
+    }
     state.currentFeedEndpoint = `${PROXY_URL}/${state.currentSite}/api/v1/posts`;
     state.currentFeedCreatorName = null;
     updateNavTabs(null);
     if (navBack) navBack.classList.remove('hidden'); 
     showView(feedView, true);
     if (state.currentSite !== 'e621' && state.currentSite !== 'gelbooru') loadCreators();
+    fetchPosts();
+  });
+}
+
+const btnFollowingFeed = document.getElementById('btn-following-feed');
+if (btnFollowingFeed) {
+  btnFollowingFeed.addEventListener('click', () => {
+    const following = getSavedTwitterFollowing();
+    if (!following || following.length === 0) {
+      alert("No followed accounts saved yet. Enter a Twitter handle in the search bar above and click 'Import Following' to import accounts!");
+      if (twitterHandleInput) twitterHandleInput.focus();
+      return;
+    }
+    resetFeed();
+    state._twitterFeedMode = 'following';
+    state._feedOriginView = 'welcome';
+    state.currentFeedCreatorName = null;
+    updateNavTabs({ name: 'Following Feed', id: 'following', service: 'twitter' });
+    if (navBack) navBack.classList.remove('hidden');
+    showView(feedView, true);
     fetchPosts();
   });
 }
@@ -610,6 +658,7 @@ if (btnCreators) {
       fetchPosts();
     } else {
       state.creatorPage = 1;
+      state._feedOriginView = 'welcome';
       showView(creatorsView, true);
       if (navBack) navBack.classList.remove('hidden'); 
       loadCreators();
@@ -694,6 +743,363 @@ if (inputE621Tag) {
     }
   });
 }
+
+// Twitter Search & Following Controls
+const twitterHandleInput = document.getElementById('twitter-handle-input');
+const twitterImportHandleInput = document.getElementById('twitter-import-handle-input');
+const btnTwitterSearch = document.getElementById('btn-twitter-search');
+const btnTwitterFollowing = document.getElementById('btn-twitter-following');
+const btnSyncTwitterFollowing = document.getElementById('btn-sync-twitter-following');
+const settingNitterInstance = document.getElementById('setting-nitter-instance');
+
+if (twitterImportHandleInput) {
+  const savedHandle = typeof localStorage !== 'undefined' ? localStorage.getItem('paw_twitter_my_handle') : null;
+  if (savedHandle) {
+    twitterImportHandleInput.value = formatTwitterHandle(savedHandle);
+  }
+}
+
+if (settingNitterInstance) {
+  settingNitterInstance.value = getPreferredNitterHost();
+  settingNitterInstance.addEventListener('change', (e) => {
+    setPreferredNitterHost(e.target.value);
+  });
+}
+
+export function loadTwitterCreator(handle, isBackNavigation = false) {
+  const clean = cleanTwitterHandle(handle);
+  if (!clean) return;
+
+  if (state.currentSite === 'twitter' && !isBackNavigation) {
+    if (!state._twitterHistory) state._twitterHistory = [];
+    if (feedView && feedView.classList.contains('active')) {
+      const feedEl = document.getElementById('feed');
+      if (feedEl && feedEl.children.length > 0) {
+        const currentHandle = state.currentFeedCreatorName ? cleanTwitterHandle(state.currentFeedCreatorName) : null;
+        if (state._twitterFeedMode !== 'creator' || (currentHandle && currentHandle !== clean)) {
+          const savedCards = Array.from(feedEl.children);
+          const savedScrollTop = feedEl.scrollTop;
+          const savedFollowingState = (state._twitterFeedMode === 'following') ? getTwitterFollowingFeedState() : null;
+
+          state._twitterHistory.push({
+            feedMode: state._twitterFeedMode,
+            creatorHandle: currentHandle,
+            cards: savedCards,
+            scrollTop: savedScrollTop,
+            followingState: savedFollowingState,
+            offset: state.offset,
+            cursor: state._twitterCursor,
+            hasMore: state.hasMore,
+            seenPostIds: new Set(state.seenPostIds),
+            originView: state._feedOriginView,
+            creatorName: state.currentFeedCreatorName,
+            feedType: state._twitterFeedType
+          });
+
+          // Detach current cards without destroying their media/listeners before resetFeed
+          feedEl.innerHTML = '';
+        }
+      }
+    }
+  }
+
+  if (twitterHandleInput) twitterHandleInput.value = formatTwitterHandle(clean);
+  resetFeed();
+  if (!isBackNavigation && (!state._feedOriginView || state._feedOriginView === 'welcome')) {
+    state._feedOriginView = state.currentView === creatorsView ? 'creators' : 'welcome';
+  }
+  state._twitterFeedMode = 'creator';
+  state._twitterFeedType = 'tweets';
+  state.currentFeedEndpoint = `https://twitter.com/${clean}`;
+  state.currentFeedCreatorName = formatTwitterHandle(clean);
+  updateNavTabs({ name: formatTwitterHandle(clean), id: clean, service: 'twitter' });
+  if (navBack) navBack.classList.remove('hidden');
+  showView(feedView, true);
+  fetchPosts();
+}
+window.loadTwitterCreator = loadTwitterCreator;
+
+function triggerTwitterSearch() {
+  const raw = twitterHandleInput ? twitterHandleInput.value : '';
+  const handle = cleanTwitterHandle(raw);
+  if (!handle) {
+    if (twitterHandleInput) twitterHandleInput.focus();
+    return;
+  }
+  loadTwitterCreator(handle);
+}
+
+if (btnTwitterSearch) {
+  btnTwitterSearch.addEventListener('click', triggerTwitterSearch);
+}
+
+if (twitterHandleInput) {
+  twitterHandleInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      triggerTwitterSearch();
+    }
+  });
+}
+
+if (twitterImportHandleInput) {
+  twitterImportHandleInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (btnTwitterFollowing) btnTwitterFollowing.click();
+    }
+  });
+}
+
+if (btnTwitterFollowing) {
+  btnTwitterFollowing.addEventListener('click', async () => {
+    const raw = twitterImportHandleInput ? twitterImportHandleInput.value : (twitterHandleInput ? twitterHandleInput.value : '');
+    const handle = cleanTwitterHandle(raw);
+    if (!handle || !isValidTwitterHandle(handle)) {
+      alert('Please enter a valid Twitter handle (e.g. @username) without spaces in the Following Import field.');
+      if (twitterImportHandleInput) twitterImportHandleInput.focus();
+      return;
+    }
+
+    const origHtml = btnTwitterFollowing.innerHTML;
+    btnTwitterFollowing.disabled = true;
+    btnTwitterFollowing.innerHTML = '<span>Importing...</span>';
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('paw_twitter_my_handle', handle);
+      }
+      const onProgress = (count, statusMsg) => {
+        btnTwitterFollowing.innerHTML = `<span>${statusMsg || `Importing (${count})...`}</span>`;
+      };
+      const accounts = await fetchTwitterFollowing(handle, 150, null, onProgress);
+      if (accounts && accounts.length > 0) {
+        saveTwitterFollowing(accounts, { merge: false });
+        state.creatorPage = 1;
+        state._feedOriginView = 'welcome';
+        showView(creatorsView, true);
+        if (navBack) navBack.classList.remove('hidden');
+        loadCreators();
+      } else {
+        alert(`No following accounts could be found for @${handle}. The account might follow 0 users or the instance challenged the request. You can try selecting another instance in settings below.`);
+      }
+    } catch (err) {
+      console.error('Following import error:', err);
+      alert(`Failed to import following accounts: ${err.message}`);
+    } finally {
+      btnTwitterFollowing.disabled = false;
+      btnTwitterFollowing.innerHTML = origHtml;
+    }
+  });
+}
+
+if (btnSyncTwitterFollowing) {
+  btnSyncTwitterFollowing.addEventListener('click', async () => {
+    let handle = typeof localStorage !== 'undefined' ? localStorage.getItem('paw_twitter_my_handle') : '';
+    if (!handle && twitterImportHandleInput && twitterImportHandleInput.value) {
+      handle = cleanTwitterHandle(twitterImportHandleInput.value);
+    }
+    if (!handle && twitterHandleInput && twitterHandleInput.value) {
+      handle = cleanTwitterHandle(twitterHandleInput.value);
+    }
+    if (!handle) {
+      const prompted = prompt('Enter your Twitter handle to sync followed accounts (e.g. @username):');
+      handle = cleanTwitterHandle(prompted);
+    }
+    if (!handle || !isValidTwitterHandle(handle)) {
+      if (handle) alert('Please enter a valid Twitter handle (e.g. @username) without spaces.');
+      return;
+    }
+
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('paw_twitter_my_handle', handle);
+    }
+    if (twitterImportHandleInput) {
+      twitterImportHandleInput.value = formatTwitterHandle(handle);
+    }
+
+    const origHtml = btnSyncTwitterFollowing.innerHTML;
+    btnSyncTwitterFollowing.disabled = true;
+    btnSyncTwitterFollowing.innerHTML = '<span>Syncing...</span>';
+
+    try {
+      const onProgress = (count, statusMsg) => {
+        btnSyncTwitterFollowing.innerHTML = `<span>${statusMsg || `Syncing (${count})...`}</span>`;
+      };
+      const accounts = await fetchTwitterFollowing(handle, 150, null, onProgress);
+      if (accounts && accounts.length > 0) {
+        saveTwitterFollowing(accounts, { merge: false });
+        state.creatorPage = 1;
+        loadCreators();
+      } else {
+        alert(`No followed accounts could be retrieved for @${handle}. The Nitter instance may be temporarily busy, please try again in a few moments.`);
+      }
+    } catch (err) {
+      console.error('Sync error:', err);
+      alert(`Sync error: ${err.message}`);
+    } finally {
+      btnSyncTwitterFollowing.disabled = false;
+      btnSyncTwitterFollowing.innerHTML = origHtml;
+    }
+  });
+}
+
+// Twitter File & Paste Import Controls
+const btnTwitterFileImport = document.getElementById('btn-twitter-file-import');
+const btnSyncTwitterFile = document.getElementById('btn-sync-twitter-file');
+const btnTwitterPasteImport = document.getElementById('btn-twitter-paste-import');
+const btnSyncTwitterPaste = document.getElementById('btn-sync-twitter-paste');
+const twitterFileInput = document.getElementById('twitter-file-input');
+const twitterImportModal = document.getElementById('twitter-import-modal');
+const btnCloseTwitterImportModal = document.getElementById('btn-close-twitter-import-modal');
+const btnCancelTwitterPaste = document.getElementById('btn-cancel-twitter-paste');
+const btnSubmitTwitterPaste = document.getElementById('btn-submit-twitter-paste');
+const twitterPasteTextarea = document.getElementById('twitter-paste-textarea');
+const twitterPasteDetectedCount = document.getElementById('twitter-paste-detected-count');
+
+function triggerTwitterFileUpload() {
+  if (twitterFileInput) {
+    twitterFileInput.value = '';
+    twitterFileInput.click();
+  }
+}
+
+if (btnTwitterFileImport) btnTwitterFileImport.addEventListener('click', triggerTwitterFileUpload);
+if (btnSyncTwitterFile) btnSyncTwitterFile.addEventListener('click', triggerTwitterFileUpload);
+
+if (twitterFileInput) {
+  twitterFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const accounts = parseTwitterFollowingInput(text);
+      if (accounts && accounts.length > 0) {
+        let shouldMerge = false;
+        const existingCount = getSavedTwitterFollowing().length;
+        if (existingCount > 0) {
+          shouldMerge = confirm(`You already have ${existingCount} followed accounts saved.\n\nClick OK to Add to your existing accounts (Merge).\nClick Cancel to Replace them.`);
+        }
+        saveTwitterFollowing(accounts, { merge: shouldMerge });
+        alert(`Successfully imported ${accounts.length} accounts from "${file.name}"!`);
+        state.creatorPage = 1;
+        state._feedOriginView = 'welcome';
+        showView(creatorsView, true);
+        if (navBack) navBack.classList.remove('hidden');
+        loadCreators();
+      } else {
+        alert(`No valid Twitter handles could be parsed from "${file.name}". Ensure the file contains Twitter handles or following.js.`);
+      }
+    } catch (err) {
+      alert(`Failed to read file: ${err.message}`);
+    }
+  });
+}
+
+function openTwitterPasteModal() {
+  if (twitterImportModal) {
+    twitterImportModal.style.display = 'flex';
+    if (twitterPasteTextarea) {
+      twitterPasteTextarea.value = '';
+      twitterPasteTextarea.focus();
+    }
+    if (twitterPasteDetectedCount) {
+      twitterPasteDetectedCount.textContent = '0 handles detected';
+    }
+  }
+}
+
+function closeTwitterPasteModal() {
+  if (twitterImportModal) twitterImportModal.style.display = 'none';
+}
+
+if (btnTwitterPasteImport) btnTwitterPasteImport.addEventListener('click', openTwitterPasteModal);
+if (btnSyncTwitterPaste) btnSyncTwitterPaste.addEventListener('click', openTwitterPasteModal);
+if (btnCloseTwitterImportModal) btnCloseTwitterImportModal.addEventListener('click', closeTwitterPasteModal);
+if (btnCancelTwitterPaste) btnCancelTwitterPaste.addEventListener('click', closeTwitterPasteModal);
+
+if (twitterImportModal) {
+  twitterImportModal.addEventListener('click', (e) => {
+    if (e.target === twitterImportModal) closeTwitterPasteModal();
+  });
+}
+
+if (twitterPasteTextarea && twitterPasteDetectedCount) {
+  twitterPasteTextarea.addEventListener('input', () => {
+    const parsed = parseTwitterFollowingInput(twitterPasteTextarea.value);
+    twitterPasteDetectedCount.textContent = `${parsed.length} handles detected`;
+  });
+}
+
+if (btnSubmitTwitterPaste) {
+  btnSubmitTwitterPaste.addEventListener('click', () => {
+    const raw = twitterPasteTextarea ? twitterPasteTextarea.value : '';
+    const accounts = parseTwitterFollowingInput(raw);
+    if (accounts && accounts.length > 0) {
+      let shouldMerge = false;
+      const existingCount = getSavedTwitterFollowing().length;
+      if (existingCount > 0) {
+        shouldMerge = confirm(`You already have ${existingCount} followed accounts saved.\n\nClick OK to Add to your existing accounts (Merge).\nClick Cancel to Replace them.`);
+      }
+      saveTwitterFollowing(accounts, { merge: shouldMerge });
+      alert(`Successfully imported ${accounts.length} accounts!`);
+      closeTwitterPasteModal();
+      state.creatorPage = 1;
+      state._feedOriginView = 'welcome';
+      showView(creatorsView, true);
+      if (navBack) navBack.classList.remove('hidden');
+      loadCreators();
+    } else {
+      alert('No valid Twitter handles found. Please enter handles (e.g. @ceno02, @Slimeanor).');
+    }
+  });
+}
+
+// Export / Backup Following Accounts List
+function exportTwitterFollowing() {
+  const accounts = getSavedTwitterFollowing();
+  if (!accounts || accounts.length === 0) {
+    alert("No saved Twitter following accounts to export. Import your following accounts first.");
+    return;
+  }
+  const jsonStr = JSON.stringify(accounts, null, 2);
+  const blob = new Blob([jsonStr], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `paw-twitter-following-${accounts.length}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+const btnTwitterExport = document.getElementById("btn-twitter-export");
+const btnSyncTwitterExport = document.getElementById("btn-sync-twitter-export");
+if (btnTwitterExport) btnTwitterExport.addEventListener("click", exportTwitterFollowing);
+if (btnSyncTwitterExport) btnSyncTwitterExport.addEventListener("click", exportTwitterFollowing);
+
+// Clear Following Accounts List
+function handleClearTwitterFollowing() {
+  const existing = getSavedTwitterFollowing();
+  if (!existing || existing.length === 0) {
+    alert('There are no saved Twitter following accounts to clear.');
+    return;
+  }
+  const confirmed = confirm(`Are you sure you want to clear all ${existing.length} imported Twitter accounts?`);
+  if (!confirmed) return;
+  clearTwitterFollowing();
+  if (twitterImportHandleInput) twitterImportHandleInput.value = '';
+  if (state.currentSite === 'twitter') {
+    state.creatorPage = 1;
+    loadCreators();
+  }
+  alert('Successfully cleared all imported Twitter accounts.');
+}
+
+const btnTwitterClear = document.getElementById("btn-twitter-clear");
+const btnSyncTwitterClear = document.getElementById("btn-sync-twitter-clear");
+if (btnTwitterClear) btnTwitterClear.addEventListener("click", handleClearTwitterFollowing);
+if (btnSyncTwitterClear) btnSyncTwitterClear.addEventListener("click", handleClearTwitterFollowing);
 
 let searchTimeout;
 if (searchInput) {
