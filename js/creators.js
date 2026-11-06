@@ -8,8 +8,6 @@ import {
   cleanTwitterHandle,
   formatTwitterHandle,
   cleanTwitterMediaUrl,
-  fetchTwitterUserFollowers,
-  getCachedTwitterFollowers,
   isValidTwitterHandle
 } from "./twitter.js";
 
@@ -282,8 +280,10 @@ export async function loadCreators() {
   const btnSyncExport = document.getElementById("btn-sync-twitter-export");
   const btnSyncClear = document.getElementById("btn-sync-twitter-clear");
   const creatorsTitle = document.getElementById("creators-title");
+  const syncActionsContainer = document.querySelector(".creator-sync-actions");
 
   if (state.currentSite === "twitter") {
+    if (syncActionsContainer) syncActionsContainer.style.display = "flex";
     if (btnSyncFollowing) btnSyncFollowing.style.display = "";
     if (btnSyncFile) btnSyncFile.style.display = "";
     if (btnSyncPaste) btnSyncPaste.style.display = "";
@@ -294,11 +294,11 @@ export async function loadCreators() {
     if (sortSelect) {
       const curVal = sortSelect.value;
       sortSelect.innerHTML = `
-        <option value="date">Followed Date</option>
-        <option value="username">Username (@handle)</option>
-        <option value="alphabetical">A-Z (Name)</option>
+        <option value="date">Follow Date</option>
+        <option value="name">Name</option>
+        <option value="username">Username</option>
       `;
-      if (["date", "username", "alphabetical"].includes(curVal)) {
+      if (["date", "name", "username"].includes(curVal)) {
         sortSelect.value = curVal;
       } else {
         sortSelect.value = "date";
@@ -313,7 +313,6 @@ export async function loadCreators() {
       const handle = cleanTwitterHandle(acc.handle || acc.id);
       const displayHandle = formatTwitterHandle(handle);
       const avatarUrl = cleanTwitterMediaUrl(acc.avatar || "");
-      const followers = acc.followers || 0;
       const followedAt = acc.followedAt || (Date.now() - idx * 1000);
       return {
         id: handle,
@@ -323,7 +322,6 @@ export async function loadCreators() {
         service: "twitter",
         avatar: avatarUrl,
         bio: acc.bio || "",
-        followers: followers,
         followedAt: followedAt,
         favorited: 0,
         allPlatforms: [{
@@ -331,8 +329,7 @@ export async function loadCreators() {
           name: acc.name || displayHandle,
           username: displayHandle,
           service: "twitter",
-          avatar: avatarUrl,
-          followers: followers
+          avatar: avatarUrl
         }]
       };
     });
@@ -342,6 +339,7 @@ export async function loadCreators() {
     return;
   }
 
+  if (syncActionsContainer) syncActionsContainer.style.display = "none";
   if (btnSyncFollowing) btnSyncFollowing.style.display = "none";
   if (btnSyncFile) btnSyncFile.style.display = "none";
   if (btnSyncPaste) btnSyncPaste.style.display = "none";
@@ -581,10 +579,10 @@ export function filterAndSortCreators() {
       let diff = 0;
       if (sort === "date") {
         diff = (b.followedAt || 0) - (a.followedAt || 0);
+      } else if (sort === "name") {
+        diff = (a.name || a.handle || "").localeCompare(b.name || b.handle || "");
       } else if (sort === "username") {
         diff = (a.handle || "").localeCompare(b.handle || "");
-      } else if (sort === "alphabetical") {
-        diff = (a.name || a.handle || "").localeCompare(b.name || b.handle || "");
       } else {
         diff = (b.followedAt || 0) - (a.followedAt || 0);
       }
@@ -627,21 +625,6 @@ export function filterAndSortCreators() {
 
 export function buildCreatorCard(creator, checkedServices = []) {
   if (state.currentSite === "twitter" && creator._cardElement) {
-    const fav = creator._cardElement.querySelector(".creator-favorites");
-    if (fav && fav.dataset.handle) {
-      const cleanHandle = cleanTwitterHandle(fav.dataset.handle);
-      const cached = getCachedTwitterFollowers(cleanHandle);
-      if (typeof cached === "number" && cached > 0) {
-        const formatStat = (num) => {
-          if (!num || isNaN(num)) return "0";
-          if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
-          if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "K";
-          return num.toLocaleString();
-        };
-        fav.textContent = `👥 ${formatStat(cached)} followers`;
-        delete fav.dataset.handle;
-      }
-    }
     return creator._cardElement;
   }
 
@@ -727,26 +710,7 @@ export function buildCreatorCard(creator, checkedServices = []) {
   const favorites = document.createElement("div");
   favorites.className = "creator-favorites";
   if (state.currentSite === "twitter") {
-    const cleanHandle = cleanTwitterHandle(creator.handle || creator.id || initialPlatform.id);
-    const cachedFollowers = getCachedTwitterFollowers(cleanHandle);
-    const fCount = (typeof cachedFollowers === "number")
-      ? cachedFollowers
-      : (typeof initialPlatform.followers === "number" && initialPlatform.followers > 0 ? initialPlatform.followers : creator.followers);
-
-    const formatCount = (num) => {
-      if (!num || isNaN(num)) return "0";
-      if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
-      if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "K";
-      return num.toLocaleString();
-    };
-    if (typeof fCount === "number" && (fCount > 0 || cachedFollowers !== null)) {
-      favorites.textContent = fCount > 0 ? `👥 ${formatCount(fCount)} followers` : `👥 0 followers`;
-    } else {
-      favorites.textContent = `👥 ... followers`;
-      if (cleanHandle && isValidTwitterHandle(cleanHandle)) {
-        favorites.dataset.handle = cleanHandle;
-      }
-    }
+    favorites.style.display = "none";
   } else {
     favorites.textContent = `⭐ ${getFavCount(initialPlatform).toLocaleString()}`;
   }
@@ -782,21 +746,7 @@ export function buildCreatorCard(creator, checkedServices = []) {
       setAvatar(newPlatform);
       name.textContent = newPlatform.name;
       service.textContent = newPlatform.service;
-      if (state.currentSite === "twitter") {
-        const fCount = newPlatform.followers || creator.followers;
-        const formatCount = (num) => {
-          if (!num || isNaN(num)) return "0";
-          if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
-          if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "K";
-          return num.toLocaleString();
-        };
-        if (fCount && fCount > 0) {
-          favorites.textContent = `👥 ${formatCount(fCount)} followers`;
-        } else {
-          favorites.textContent = `👥 ... followers`;
-          favorites.dataset.handle = newPlatform.id || creator.id;
-        }
-      } else {
+      if (state.currentSite !== "twitter") {
         favorites.textContent = `⭐ ${getFavCount(newPlatform).toLocaleString()}`;
       }
       card.style.background = getServiceColor(newPlatform.service);
@@ -876,76 +826,6 @@ export function renderCreatorsPage() {
   });
 
   renderPagination(totalPages);
-  hydrateVisibleTwitterFollowers();
-}
-
-let twitterHydrationSeq = 0;
-function hydrateVisibleTwitterFollowers() {
-  if (state.currentSite !== "twitter") return;
-  const currentSeq = ++twitterHydrationSeq;
-  const pendingEls = Array.from(document.querySelectorAll(".creator-favorites[data-handle]"));
-  if (pendingEls.length === 0) return;
-
-  const formatCount = (num) => {
-    if (!num || isNaN(num)) return "0";
-    if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
-    if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "K";
-    return num.toLocaleString();
-  };
-
-  const handles = [];
-  pendingEls.forEach((el) => {
-    const raw = el.dataset.handle;
-    const h = cleanTwitterHandle(raw);
-    if (!h || !isValidTwitterHandle(h)) {
-      delete el.dataset.handle;
-      return;
-    }
-    const cached = getCachedTwitterFollowers(h);
-    if (typeof cached === "number") {
-      el.textContent = cached > 0 ? `👥 ${formatCount(cached)} followers` : `👥 0 followers`;
-      delete el.dataset.handle;
-      return;
-    }
-    if (!handles.includes(h)) handles.push(h);
-  });
-
-  if (handles.length === 0) return;
-
-  let active = 0;
-  let idx = 0;
-
-  const next = () => {
-    if (currentSeq !== twitterHydrationSeq || state.currentSite !== "twitter") return;
-    while (active < 5 && idx < handles.length) {
-      const handle = handles[idx++];
-      active++;
-      fetchTwitterUserFollowers(handle)
-        .then((followers) => {
-          if (currentSeq !== twitterHydrationSeq) return;
-          const count = (typeof followers === "number") ? followers : 0;
-          document.querySelectorAll(`.creator-favorites[data-handle="${handle}"]`).forEach((el) => {
-            el.textContent = count > 0 ? `👥 ${formatCount(count)} followers` : `👥 0 followers`;
-            delete el.dataset.handle;
-          });
-          const cr = state.allCreators.find((c) => cleanTwitterHandle(c.id) === handle || cleanTwitterHandle(c.handle) === handle);
-          if (cr) {
-            cr.followers = count;
-            if (cr.allPlatforms && cr.allPlatforms[0]) cr.allPlatforms[0].followers = count;
-          }
-        })
-        .catch(() => {
-          document.querySelectorAll(`.creator-favorites[data-handle="${handle}"]`).forEach((el) => {
-            delete el.dataset.handle;
-          });
-        })
-        .finally(() => {
-          active--;
-          next();
-        });
-    }
-  };
-  next();
 }
 
 export function renderPagination(totalPages) {

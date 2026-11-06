@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="color-scheme" content="dark">
   <title>pawred</title>
-  <link rel="stylesheet" href="style.css?v=2.17">
+  <link rel="stylesheet" href="style.css?v=2.19">
   <link rel="icon" type="image" href="icons/paw.png">
 </head>
 <body>
@@ -84,6 +84,13 @@
       <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-top: 15px;">
         <span>Hide WIP posts</span>
         <input type="checkbox" id="setting-hide-wip" style="width: 18px; height: 18px; cursor: pointer;">
+      </label>
+      <label id="setting-twitter-hide-replies-wrap" style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-top: 15px;">
+        <span style="display: flex; flex-direction: column;">
+          <span>Hide Twitter replies</span>
+          <span style="font-size: 0.75rem; color: #8899a6; font-weight: normal;">Hide replies to other accounts (keeps art &amp; self-threads)</span>
+        </span>
+        <input type="checkbox" id="setting-twitter-hide-replies" style="width: 18px; height: 18px; cursor: pointer; flex-shrink: 0; margin-left: 10px;">
       </label>
       <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-top: 15px;">
         <span>Disable animations</span>
@@ -215,7 +222,7 @@
         </button>
       </div>
       <div id="twitter-search-container" class="twitter-search-container" style="display: none;">
-        <input type="text" id="twitter-handle-input" placeholder="Search account (e.g. @ceno02)..." autocomplete="off" spellcheck="false">
+        <input type="text" id="twitter-handle-input" placeholder="Search account..." autocomplete="off" spellcheck="false">
         <button id="btn-twitter-search" class="btn-twitter-load" title="Search and load account feed">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="11" cy="11" r="8"></circle>
@@ -333,7 +340,7 @@
       </div>
 
       <!-- Twitter Settings & Instance Panel (Home Page) -->
-      <div id="twitter-account-panel" class="e621-account-panel" style="display: none;">
+      <div id="twitter-account-panel" class="e621-account-panel teapawt-account-panel" style="display: none;">
         <div class="e621-account-panel-header">
           <span class="e621-account-panel-title">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -342,24 +349,31 @@
               <line x1="6" y1="6" x2="6.01" y2="6"></line>
               <line x1="6" y1="18" x2="6.01" y2="18"></line>
             </svg>
-            <span>Twitter / Teapawt Settings</span>
+            <span>Teapawt Instances</span>
           </span>
-          <span id="twitter-instance-status" style="font-size: 11px; opacity: 0.75; color: #1d9bf0;">Auto-Failover Active</span>
+          <button type="button" id="btn-ping-instances" class="teapawt-refresh-ping-btn" title="Ping all instances to check status and latency">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            <span>Ping All</span>
+          </button>
         </div>
 
-        <div class="e621-account-form">
-          <label class="e621-field-label">
-            <span>Preferred Teapawt Instance</span>
-            <select id="setting-nitter-instance" class="twitter-instance-select">
-              <option value="teapaw.org">teapaw.org (Teapawt - Verified Open &amp; Fast)</option>
-              <option value="teapawt.org">teapawt.org (Teapawt - Verified Open)</option>
-              <option value="teapawt.net">teapawt.net (Teapawt - Verified Open)</option>
-              <option value="xitter.gq">xitter.gq (Teapawt - Mirror)</option>
-              <option value="nitter.gq">nitter.gq (Teapawt - Mirror)</option>
-            </select>
+        <div class="teapawt-instances-container">
+          <div id="teapawt-instances-list" class="teapawt-instances-grid">
+            <!-- Dynamically populated with live status & ms latency -->
+          </div>
+          <label style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; margin-top: 12px; cursor: pointer;">
+            <span style="display: flex; flex-direction: column; gap: 2px;">
+              <span style="font-size: 0.92rem; font-weight: 600; color: #fff;">Hide Replies</span>
+              <span style="font-size: 0.8rem; color: #8899a6;">Hide replies to other accounts (avoids shitposts, keeps original posts &amp; self-threads)</span>
+            </span>
+            <input type="checkbox" id="setting-twitter-hide-replies-home" style="width: 18px; height: 18px; cursor: pointer; flex-shrink: 0; margin-left: 12px;">
           </label>
-          <div class="twitter-settings-hint">
-            Direct high-speed Twitter streaming via Teapawt. If the selected instance is busy, Paw Reader will automatically failover to the next healthy instance.
+          <div class="twitter-settings-hint" style="margin-top: 10px;">
+            Click any healthy instance to select it as your preferred host. If your selected instance is slow or down, Paw Reader automatically fails over to the next healthy instance.
           </div>
         </div>
       </div>
@@ -442,53 +456,75 @@
   <div id="creators-view" class="view">
     <h2 id="creators-title">Creators</h2>
     <div class="creators-controls">
-      <div class="creator-search-wrap">
-        <input type="text" id="creator-search" placeholder="Search creators..." autocomplete="off">
-        <button type="button" id="creator-search-clear" class="creator-search-clear" title="Clear search" aria-label="Clear search" style="display: none;">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
+      <div class="creators-controls-top">
+        <div class="creator-search-wrap">
+          <input type="text" id="creator-search" placeholder="Search creators..." autocomplete="off">
+          <button type="button" id="creator-search-clear" class="creator-search-clear" title="Clear search" aria-label="Clear search" style="display: none;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+
+        <div class="creator-sort-group">
+          <select id="creator-sort">
+            <option value="popularity">Popularity</option>
+            <option value="indexed">Date Indexed</option>
+            <option value="updated">Date Updated</option>
+            <option value="alphabetical">Alphabetical Order</option>
+            <option value="service">Service</option>
+          </select>
+          <button id="creator-sort-dir" title="Toggle sort direction" style="display: flex; align-items: center; justify-content: center;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <polyline points="19 12 12 19 5 12"></polyline>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="creator-sync-actions">
+        <button id="btn-sync-twitter-following" class="creator-sync-btn" title="Sync / Re-import followed accounts from Twitter" style="display: none;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
           </svg>
+          <span>Sync Following</span>
+        </button>
+        <button id="btn-sync-twitter-file" class="creator-sync-btn" title="Upload followed accounts file (.json, .csv, .txt)" style="display: none;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          <span>Upload File</span>
+        </button>
+        <button id="btn-sync-twitter-paste" class="creator-sync-btn" title="Paste handle list" style="display: none;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+            <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+          </svg>
+          <span>Paste List</span>
+        </button>
+        <button id="btn-sync-twitter-export" class="creator-sync-btn" title="Export / backup followed accounts to JSON" style="display: none;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <span>Backup / Export</span>
+        </button>
+        <button id="btn-sync-twitter-clear" class="creator-sync-btn" title="Clear all saved followed accounts" style="display: none;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+          <span>Clear</span>
         </button>
       </div>
-      <button id="btn-sync-twitter-following" class="creator-sync-btn" title="Sync / Re-import followed accounts from Twitter" style="display: none;">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="23 4 23 10 17 10"></polyline>
-          <polyline points="1 20 1 14 7 14"></polyline>
-          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-        </svg>
-        <span>Sync Following</span>
-      </button>
-      <button id="btn-sync-twitter-file" class="creator-sync-btn" title="Upload followed accounts file (.json, .csv, .txt)" style="display: none;">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-          <polyline points="17 8 12 3 7 8"></polyline>
-          <line x1="12" y1="3" x2="12" y2="15"></line>
-        </svg>
-        <span>Upload File</span>
-      </button>
-      <button id="btn-sync-twitter-paste" class="creator-sync-btn" title="Paste handle list" style="display: none;">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
-          <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
-        </svg>
-        <span>Paste List</span>
-      </button>
-      <button id="btn-sync-twitter-export" class="creator-sync-btn" title="Export / backup followed accounts to JSON" style="display: none;">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-          <polyline points="7 10 12 15 17 10"></polyline>
-          <line x1="12" y1="15" x2="12" y2="3"></line>
-        </svg>
-        <span>Backup / Export</span>
-      </button>
-      <button id="btn-sync-twitter-clear" class="creator-sync-btn" title="Clear all saved followed accounts" style="display: none;">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="3 6 5 6 21 6"></polyline>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-        </svg>
-        <span>Clear</span>
-      </button>
+
       <div id="creator-service-filter" class="checkbox-container">
         <!-- populated dynamically -->
       </div>
@@ -507,15 +543,6 @@
         <option value="non_binary">Non-binary</option>
         <option value="group">Group</option>
       </select>
-
-      <select id="creator-sort">
-        <option value="popularity">Popularity</option>
-        <option value="indexed">Date Indexed</option>
-        <option value="updated">Date Updated</option>
-        <option value="alphabetical">Alphabetical Order</option>
-        <option value="service">Service</option>
-      </select>
-      <button id="creator-sort-dir" title="Toggle sort direction" style="display: flex; align-items: center; justify-content: center;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg></button>
     </div>
     <div id="creator-pagination-top" class="pagination pagination-top"></div>
     <div id="creators-loading" class="loading"><span class="loading-spinner"></span><span>Loading creators...</span></div>
@@ -543,9 +570,9 @@
       </div>
       <div class="twitter-import-modal-body">
         <p style="margin: 0; font-size: 0.88rem; color: #8899a6; line-height: 1.4;">
-          Paste handles separated by commas, newlines, or spaces (e.g. <code>@ceno02, @Slimeanor</code>, or raw text containing handles).
+          Paste handles separated by commas, newlines, or spaces, or raw text containing handles).
         </p>
-        <textarea id="twitter-paste-textarea" rows="8" placeholder="Paste handles here...&#10;@ceno02&#10;@Slimeanor&#10;@AtasticForReal" style="width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; color: #fff; padding: 10px; font-family: monospace; font-size: 0.9rem; resize: vertical; outline: none;"></textarea>
+        <textarea id="twitter-paste-textarea" rows="8" placeholder="Paste handles here..." style="width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; color: #fff; padding: 10px; font-family: monospace; font-size: 0.9rem; resize: vertical; outline: none;"></textarea>
         <div class="twitter-import-modal-footer">
           <span id="twitter-paste-detected-count" style="font-size: 0.85rem; color: #1d9bf0; font-weight: 600;">0 handles detected</span>
           <div style="display: flex; gap: 8px;">

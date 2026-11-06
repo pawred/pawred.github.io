@@ -82,6 +82,8 @@ import { attachTagAutocomplete } from './js/autocomplete.js';
 import {
   getPreferredNitterHost,
   setPreferredNitterHost,
+  renderTeapawtInstancesUi,
+  pingAllTeapawtInstances,
   fetchTwitterFollowing,
   saveTwitterFollowing,
   clearTwitterFollowing,
@@ -103,6 +105,7 @@ const savedPreload = localStorage.getItem('paw_preload_count');
 window.pawPreloadCount = savedPreload !== null ? parseInt(savedPreload, 10) : 1;
 window.pawCustomGifPlayer = localStorage.getItem('paw_custom_gif_player') !== 'false';
 window.pawProgressiveImages = localStorage.getItem('paw_progressive_images') === 'true';
+window.pawTwitterHideReplies = localStorage.getItem('paw_twitter_hide_replies') === 'true';
 if (window.pawAnimationsDisabled) document.body.classList.add('no-animations');
 
 function formatWorkerVersion(raw) {
@@ -225,6 +228,27 @@ if (settingHideCovers) {
       fetchPosts();
     }
   });
+}
+
+const settingTwitterHideReplies = document.getElementById('setting-twitter-hide-replies');
+const settingTwitterHideRepliesHome = document.getElementById('setting-twitter-hide-replies-home');
+function updateTwitterHideReplies(checked) {
+  window.pawTwitterHideReplies = checked;
+  localStorage.setItem('paw_twitter_hide_replies', checked);
+  if (settingTwitterHideReplies) settingTwitterHideReplies.checked = checked;
+  if (settingTwitterHideRepliesHome) settingTwitterHideRepliesHome.checked = checked;
+  if (feedView && feedView.classList.contains('active') && state.currentSite === 'twitter') {
+    resetFeed();
+    fetchPosts();
+  }
+}
+if (settingTwitterHideReplies) {
+  settingTwitterHideReplies.checked = window.pawTwitterHideReplies;
+  settingTwitterHideReplies.addEventListener('change', (e) => updateTwitterHideReplies(e.target.checked));
+}
+if (settingTwitterHideRepliesHome) {
+  settingTwitterHideRepliesHome.checked = window.pawTwitterHideReplies;
+  settingTwitterHideRepliesHome.addEventListener('change', (e) => updateTwitterHideReplies(e.target.checked));
 }
 
 const settingPreloadCount = document.getElementById('setting-preload-count');
@@ -750,7 +774,7 @@ const twitterImportHandleInput = document.getElementById('twitter-import-handle-
 const btnTwitterSearch = document.getElementById('btn-twitter-search');
 const btnTwitterFollowing = document.getElementById('btn-twitter-following');
 const btnSyncTwitterFollowing = document.getElementById('btn-sync-twitter-following');
-const settingNitterInstance = document.getElementById('setting-nitter-instance');
+const btnPingInstances = document.getElementById('btn-ping-instances');
 
 if (twitterImportHandleInput) {
   const savedHandle = typeof localStorage !== 'undefined' ? localStorage.getItem('paw_twitter_my_handle') : null;
@@ -759,11 +783,15 @@ if (twitterImportHandleInput) {
   }
 }
 
-if (settingNitterInstance) {
-  settingNitterInstance.value = getPreferredNitterHost();
-  settingNitterInstance.addEventListener('change', (e) => {
-    setPreferredNitterHost(e.target.value);
+// Initialize Teapawt instances list UI & Ping All button
+renderTeapawtInstancesUi();
+if (btnPingInstances) {
+  btnPingInstances.addEventListener('click', () => {
+    pingAllTeapawtInstances(true);
   });
+}
+if (state.currentSite === 'twitter') {
+  pingAllTeapawtInstances(false);
 }
 
 export function loadTwitterCreator(handle, isBackNavigation = false) {

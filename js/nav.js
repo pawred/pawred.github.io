@@ -5,6 +5,7 @@ import { escapeHtml } from "./utils.js";
 import { getE621Auth } from "./e621Auth.js";
 import { getGelbooruAuth } from "./gelbooruAuth.js";
 import { attachTagAutocomplete } from "./autocomplete.js";
+import { renderTeapawtInstancesUi, pingAllTeapawtInstances } from "./twitter.js";
 
 export const welcomeScreen = document.getElementById("welcome-screen");
 export const creatorsView = document.getElementById("creators-view");
@@ -260,7 +261,13 @@ export function updateSiteSpecificUI() {
   // Account panels
   if (e621AccountPanel) e621AccountPanel.style.display = state.currentSite === "e621" ? "block" : "none";
   if (gelbooruAccountPanel) gelbooruAccountPanel.style.display = state.currentSite === "gelbooru" ? "block" : "none";
-  if (twitterAccountPanel) twitterAccountPanel.style.display = isTwitter ? "block" : "none";
+  if (twitterAccountPanel) {
+    twitterAccountPanel.style.display = isTwitter ? "block" : "none";
+    if (isTwitter) {
+      renderTeapawtInstancesUi();
+      pingAllTeapawtInstances(false);
+    }
+  }
 
   updateSourceSwitcher(state.currentSite);
 }

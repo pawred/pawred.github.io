@@ -2237,6 +2237,12 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
 
       const renderQuoteContent = (q) => {
         quoteCard.classList.remove("twitter-quoted-unavailable");
+        const safeQuoteBody = q.text
+          ? (q.text.includes("<a ")
+              ? q.text.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "").replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, "")
+              : escapeHtml(q.text).replace(/\n/g, "<br>"))
+          : "";
+
         quoteCard.innerHTML = `
           <div class="twitter-quoted-header">
             <div class="twitter-quote-badge">
@@ -2252,7 +2258,7 @@ export function renderPostInfoSection(post, authorEl, titleEl, contentEl) {
               ${q.date ? `<span class="twitter-quoted-date">· ${escapeHtml(q.date)}</span>` : ""}
             </div>
           </div>
-          ${q.text ? `<div class="twitter-quoted-body">${q.text}</div>` : ""}
+          ${safeQuoteBody ? `<div class="twitter-quoted-body">${safeQuoteBody}</div>` : ""}
           ${q.mediaUrl && !post._quoteMediaAdopted && (!post.file && (!post.attachments || post.attachments.length === 0)) ? `
             <div class="twitter-quoted-media">
               <img src="${q.mediaUrl}" alt="" loading="lazy">
@@ -2687,8 +2693,14 @@ export function createPostCard(rawPost) {
     }
   }
 
-  if (post.service === "twitter" && (!post.user || post.user === "Unknown" || !cleanTwitterHandle(post.user))) {
-    return null;
+  if (post.service === "twitter") {
+    if (!post.user || post.user === "Unknown" || !cleanTwitterHandle(post.user)) {
+      return null;
+    }
+    const hideReplies = window.pawTwitterHideReplies ?? (localStorage.getItem("paw_twitter_hide_replies") === "true");
+    if (hideReplies && post.isReply && !post.isSelfReply) {
+      return null;
+    }
   }
 
   const card = document.createElement("div");

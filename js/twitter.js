@@ -80,12 +80,66 @@ export function cleanTwitterMediaUrl(src, host) {
 }
 
 export const NITTER_INSTANCES = [
-  { name: "teapaw.org (Teapawt - Verified Open & Fast)", host: "teapaw.org", supportsHtml: true, supportsRss: true },
-  { name: "teapawt.org (Teapawt - Verified Open)", host: "teapawt.org", supportsHtml: true, supportsRss: true },
-  { name: "teapawt.net (Teapawt - Verified Open)", host: "teapawt.net", supportsHtml: true, supportsRss: true },
-  { name: "xitter.gq (Teapawt - Mirror)", host: "xitter.gq", supportsHtml: true, supportsRss: true },
-  { name: "nitter.gq (Teapawt - Mirror)", host: "nitter.gq", supportsHtml: true, supportsRss: true }
+  { name: "teapaw.org", label: "(Default)", host: "teapaw.org", supportsHtml: true, supportsRss: true },
+  { name: "teapawt.org", label: "(Mirror)", host: "teapawt.org", supportsHtml: true, supportsRss: true },
+  { name: "teapawt.net", label: "(Mirror)", host: "teapawt.net", supportsHtml: true, supportsRss: true },
+  { name: "xitter.gq", label: "(Backup)", host: "xitter.gq", supportsHtml: true, supportsRss: true },
+  { name: "nitter.gq", label: "(Backup)", host: "nitter.gq", supportsHtml: true, supportsRss: true }
 ];
+
+export async function pingInstance(host) {
+  const start = performance.now();
+  const ts = Date.now();
+  const targetUrl = `https://${host}/?_cb=${ts}`;
+  const proxyUrl = `${PROXY_URL}/proxy?url=${encodeURIComponent(targetUrl)}&_t=${ts}`;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000);
+    let res = null;
+    try {
+      res = await fetch(proxyUrl, {
+        method: "HEAD",
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache, no-store, must-revalidate" },
+        signal: controller.signal
+      });
+      if (res.status === 405) {
+        res = await fetch(proxyUrl, {
+          method: "GET",
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache, no-store, must-revalidate" },
+          signal: controller.signal
+        });
+      }
+    } catch (e) {
+      if (controller.signal.aborted) throw e;
+      res = await fetch(proxyUrl, {
+        method: "GET",
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache, no-store, must-revalidate" },
+        signal: controller.signal
+      });
+    }
+    clearTimeout(timeout);
+    const ms = Math.round(performance.now() - start);
+    const ok = res.status >= 200 && res.status < 400;
+    return {
+      host,
+      status: res.status,
+      ms,
+      ok
+    };
+  } catch (err) {
+    const ms = Math.round(performance.now() - start);
+    return {
+      host,
+      status: 0,
+      ms,
+      ok: false,
+      error: err.name === "AbortError" ? "Timeout" : "Offline"
+    };
+  }
+}
 
 export function getPreferredNitterHost() {
   try {
@@ -109,6 +163,141 @@ export function setPreferredNitterHost(host) {
       localStorage.setItem("paw_nitter_instance", host);
     }
   } catch (_) {}
+}
+
+let teapawtPingMap = new Map();
+let isPingingTeapawt = false;
+let lastPingTime = 0;
+
+export function getFastestHealthyHost() {
+  let minMs = Infinity;
+  let fastestHost = null;
+  for (const [host, ping] of teapawtPingMap.entries()) {
+    if (ping && ping.ok && typeof ping.ms === "number" && ping.ms > 0) {
+      if (ping.ms < minMs) {
+        minMs = ping.ms;
+        fastestHost = host;
+      }
+    }
+  }
+  return fastestHost;
+}
+
+export function renderTeapawtInstancesUi() {
+  const container = document.getElementById("teapawt-instances-list");
+  if (!container) return;
+  const preferred = getPreferredNitterHost();
+  const fastestHost = getFastestHealthyHost();
+  const frag = document.createDocumentFragment();
+
+  NITTER_INSTANCES.forEach((inst) => {
+    const isSelected = inst.host === preferred;
+    const isFastest = inst.host === fastestHost;
+    const card = document.createElement("div");
+    card.className = `teapawt-instance-card ${isSelected ? "selected" : ""}`;
+    card.dataset.host = inst.host;
+    card.setAttribute("role", "radio");
+    card.setAttribute("aria-checked", isSelected ? "true" : "false");
+
+    const ping = teapawtPingMap.get(inst.host);
+    let pillClass = "checking";
+    let pillText = isPingingTeapawt ? "Checking..." : "Click Ping All";
+
+    if (ping) {
+      if (!ping.ok) {
+        pillClass = "offline";
+        pillText = ping.error || "Down";
+      } else if (ping.ms >= 1500) {
+        pillClass = "degraded";
+        pillText = `${ping.ms} ms`;
+      } else {
+        pillClass = "online";
+        pillText = `${ping.ms} ms`;
+      }
+    }
+
+    if (isFastest && ping && ping.ok) {
+      pillClass += " fastest";
+      pillText = `✨ ${pillText}`;
+    }
+
+    card.innerHTML = `
+      <div class="teapawt-instance-info">
+        <div class="teapawt-instance-radio">
+          <div class="teapawt-radio-circle"></div>
+        </div>
+        <div class="teapawt-instance-names">
+          <span class="teapawt-instance-host">${inst.host}</span>
+          <span class="teapawt-instance-label">${inst.label}</span>
+        </div>
+      </div>
+      <div class="teapawt-instance-status">
+        <span class="instance-ping-pill ${pillClass}" ${isFastest ? 'title="Lowest latency"' : ''}>
+          <span class="ping-dot"></span>
+          <span class="ping-text">${pillText}</span>
+        </span>
+      </div>
+    `;
+
+    card.addEventListener("click", () => {
+      setPreferredNitterHost(inst.host);
+      container.querySelectorAll(".teapawt-instance-card").forEach((c) => {
+        const sel = c.dataset.host === inst.host;
+        c.classList.toggle("selected", sel);
+        c.setAttribute("aria-checked", sel ? "true" : "false");
+      });
+    });
+
+    frag.appendChild(card);
+  });
+
+  container.innerHTML = "";
+  container.appendChild(frag);
+}
+
+export async function pingAllTeapawtInstances(force = false) {
+  if (isPingingTeapawt) return;
+  if (!force && Date.now() - lastPingTime < 30000 && teapawtPingMap.size > 0) {
+    renderTeapawtInstancesUi();
+    return;
+  }
+  isPingingTeapawt = true;
+  lastPingTime = Date.now();
+
+  const btn = document.getElementById("btn-ping-instances");
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("spinning");
+  }
+
+  const container = document.getElementById("teapawt-instances-list");
+  if (container) {
+    if (container.children.length === 0) {
+      renderTeapawtInstancesUi();
+    } else {
+      container.querySelectorAll(".instance-ping-pill").forEach((pill) => {
+        pill.className = "instance-ping-pill checking";
+        const text = pill.querySelector(".ping-text");
+        if (text) text.textContent = "Checking...";
+      });
+    }
+  }
+
+  try {
+    await Promise.all(
+      NITTER_INSTANCES.map(async (inst) => {
+        const res = await pingInstance(inst.host);
+        teapawtPingMap.set(inst.host, res);
+      })
+    );
+    renderTeapawtInstancesUi();
+  } finally {
+    isPingingTeapawt = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("spinning");
+    }
+  }
 }
 
 // Transform an RSS <item> DOM element into Paw Reader post format
@@ -149,6 +338,10 @@ export function transformTwitterRssItem(itemEl, host, itemIndex = 0) {
       retweetedBy = "Retweeted";
     }
   }
+
+  const isReplyMatch = title.match(/^R to @([a-zA-Z0-9_]{1,15}):/i);
+  const isReply = Boolean(isReplyMatch);
+  const isSelfReply = isReplyMatch ? (isReplyMatch[1].toLowerCase() === user.toLowerCase()) : false;
 
   const isVideo = desc.includes("<br>Video<br>") || desc.includes(">Video<") || desc.includes("/amplify_video_thumb/") || desc.includes("/ext_tw_video_thumb/");
   
@@ -225,7 +418,9 @@ export function transformTwitterRssItem(itemEl, host, itemIndex = 0) {
     retweetedBy: retweetedBy,
     retweetedUser: retweetedUser,
     isQuote: false,
-    quote: null
+    quote: null,
+    isReply: isReply,
+    isSelfReply: isSelfReply
   };
 }
 
@@ -284,6 +479,31 @@ export function transformTwitterHtmlItem(el, host, itemIndex = 0) {
   if (!username || !isValidTwitterHandle(username)) return null;
 
   const isSelfRetweet = Boolean(isRetweet && retweetedUser && cleanTwitterHandle(retweetedUser) === cleanTwitterHandle(username));
+
+  // Extract Replying To / Thread information
+  const replyingToEl = el.querySelector(".replying-to");
+  let isReply = Boolean(replyingToEl);
+  let isSelfReply = false;
+  let replyingToUsers = [];
+
+  if (replyingToEl) {
+    const rawReplyingText = replyingToEl.textContent || "";
+    const matches = Array.from(rawReplyingText.matchAll(/@([a-zA-Z0-9_]{1,15})/g));
+    replyingToUsers = matches.map((m) => cleanTwitterHandle(m[1])).filter(Boolean);
+    if (replyingToUsers.length === 0) {
+      const links = Array.from(replyingToEl.querySelectorAll("a"));
+      replyingToUsers = links
+        .map((a) => cleanTwitterHandle(a.textContent || a.getAttribute("href") || ""))
+        .filter(Boolean);
+    }
+    const cleanAuthor = cleanTwitterHandle(username).toLowerCase();
+    // If every replied-to user is the author themselves, it's a self-thread continuation
+    if (replyingToUsers.length > 0 && replyingToUsers.every((u) => u.toLowerCase() === cleanAuthor)) {
+      isSelfReply = true;
+    }
+  } else if (el.classList.contains("thread-line") || el.querySelector(".thread-line")) {
+    isReply = true;
+  }
 
   const text = el.querySelector(".tweet-content")?.innerHTML || "";
   const textRaw = el.querySelector(".tweet-content")?.textContent?.trim() || "";
@@ -489,6 +709,9 @@ export function transformTwitterHtmlItem(el, host, itemIndex = 0) {
       likes: likes,
       views: views
     },
+    isReply: isReply,
+    isSelfReply: isSelfReply,
+    replyingTo: replyingToUsers,
     isRetweet: isSelfRetweet ? false : isRetweet,
     isSelfRetweet: isSelfRetweet,
     retweetedBy: retweetedBy,
@@ -561,12 +784,6 @@ export async function fetchTwitterFeed(username, cursor = null, signal = null, f
             following: mFollowing ? parseInt(mFollowing[1].replace(/,/g, ""), 10) : 0,
             tweets: mTweets ? parseInt(mTweets[1].replace(/,/g, ""), 10) : 0
           };
-          if (profile.followers > 0) {
-            updateTwitterCreatorFollowers(cleanUser, profile.followers);
-          } else {
-            // Background hydrate exact follower count from FxTwitter
-            fetchTwitterUserFollowers(cleanUser).catch(() => {});
-          }
         }
 
         const items = doc.querySelectorAll(".timeline-item");
@@ -725,80 +942,7 @@ export async function fetchTwitterFeed(username, cursor = null, signal = null, f
   throw new Error(`Failed to fetch Twitter feed for ${formatTwitterHandle(cleanUser)}: ${lastError ? lastError.message : "All Teapawt instances busy"}`);
 }
 
-// Global in-memory cache for Twitter follower counts and active in-flight requests
-const twitterFollowerCache = new Map();
-const twitterFollowerInFlight = new Map();
 
-export function getCachedTwitterFollowers(handle) {
-  const clean = cleanTwitterHandle(handle);
-  if (!clean) return null;
-  if (twitterFollowerCache.has(clean)) {
-    const val = twitterFollowerCache.get(clean);
-    return val === "not_found" ? 0 : val;
-  }
-  const saved = getSavedTwitterFollowing();
-  const found = saved.find((acc) => cleanTwitterHandle(acc.handle || acc.id) === clean);
-  if (found && typeof found.followers === "number" && found.followers > 0) {
-    twitterFollowerCache.set(clean, found.followers);
-    return found.followers;
-  }
-  return null;
-}
-
-// Fetch user followers count and details via FixTweet API with deduplication, caching and retry
-export function fetchTwitterUserFollowers(handle) {
-  const clean = cleanTwitterHandle(handle);
-  if (!clean || !isValidTwitterHandle(clean)) return Promise.resolve(null);
-
-  // 1. Check in-memory / persistent cache
-  if (twitterFollowerCache.has(clean)) {
-    const cached = twitterFollowerCache.get(clean);
-    return Promise.resolve(cached === "not_found" ? 0 : cached);
-  }
-  const existingSaved = getCachedTwitterFollowers(clean);
-  if (existingSaved !== null && existingSaved > 0) {
-    return Promise.resolve(existingSaved);
-  }
-
-  // 2. Check in-flight promise to prevent duplicate concurrent network requests
-  if (twitterFollowerInFlight.has(clean)) {
-    return twitterFollowerInFlight.get(clean);
-  }
-
-  const fetchPromise = (async () => {
-    try {
-      const fxUrl = `${PROXY_URL}/proxy?url=${encodeURIComponent(`https://api.fxtwitter.com/${clean}`)}`;
-      let res = await fetch(fxUrl);
-
-      // If FixTweet returns 404 (often a transient guest token miss), retry once after a brief backoff
-      if (res.status === 404 || !res.ok) {
-        await new Promise((r) => setTimeout(r, 400));
-        res = await fetch(fxUrl);
-      }
-
-      if (res.ok) {
-        const data = await res.json();
-        const followers = data?.user?.followers;
-        if (typeof followers === "number") {
-          twitterFollowerCache.set(clean, followers);
-          updateTwitterCreatorFollowers(clean, followers);
-          return followers;
-        }
-      }
-
-      // If still not found, cache as not_found so subsequent renders don't keep spamming requests
-      twitterFollowerCache.set(clean, "not_found");
-    } catch (_) {
-      twitterFollowerCache.set(clean, "not_found");
-    } finally {
-      twitterFollowerInFlight.delete(clean);
-    }
-    return null;
-  })();
-
-  twitterFollowerInFlight.set(clean, fetchPromise);
-  return fetchPromise;
-}
 
 // Fetch tweet stats (comments, retweets, likes, views) via FixTweet API
 export async function fetchTwitterPostStats(author, tweetId) {
@@ -1003,49 +1147,56 @@ export async function resolveTwitterQuote(quoteId, host = null) {
   return null;
 }
 
-// Hydrate quote tweets that don't have media yet so they appear as full media posts
+// Hydrate quote tweets that don't have media yet so they appear as full media posts (batched in chunks of 4)
 export async function hydrateQuotePostsMedia(posts, host = null) {
   if (!Array.isArray(posts) || posts.length === 0) return;
-  const quoteHydrations = posts.map(async (p) => {
-    if (p.quote && p.quote.id && !p.file && (!p.attachments || p.attachments.length === 0)) {
-      try {
-        const resolved = await resolveTwitterQuote(p.quote.id, host);
-        if (resolved) {
-          p.quote = resolved;
-          p.isQuote = true;
-          if (resolved.isVideo) {
-            p.isVideo = true;
-            p.file = {
-              path: resolved.videoSrc || `twitter_video_${resolved.id}.mp4`,
-              name: `twitter_video_${resolved.id}.mp4`,
-              isVideo: true,
-              poster: resolved.poster,
-              needsFxFetch: !resolved.videoSrc,
-              tweetId: resolved.id,
-              user: resolved.user,
-              directUrl: resolved.videoSrc || "",
-              url: resolved.videoSrc ? `${PROXY_URL}/proxy?url=${encodeURIComponent(resolved.videoSrc)}` : ""
-            };
-            p.attachments = [];
-            if (resolved.images && resolved.images.length > 0) {
-              resolved.images.forEach((img, i) => {
-                p.attachments.push({ path: img, name: `quote_image_${i}.jpg` });
-              });
-            }
-            p._quoteMediaAdopted = true;
-          } else if (resolved.images && resolved.images.length > 0) {
-            p.file = { path: resolved.images[0], name: `quote_image_0.jpg` };
-            p.attachments = [];
-            for (let i = 1; i < resolved.images.length; i++) {
-              p.attachments.push({ path: resolved.images[i], name: `quote_image_${i}.jpg` });
-            }
-            p._quoteMediaAdopted = true;
+  const targetPosts = posts.filter(
+    (p) => p.quote && p.quote.id && !p.file && (!p.attachments || p.attachments.length === 0)
+  );
+  if (targetPosts.length === 0) return;
+
+  const resolveOne = async (p) => {
+    try {
+      const resolved = await resolveTwitterQuote(p.quote.id, host);
+      if (resolved) {
+        p.quote = resolved;
+        p.isQuote = true;
+        if (resolved.isVideo) {
+          p.isVideo = true;
+          p.file = {
+            path: resolved.videoSrc || `twitter_video_${resolved.id}.mp4`,
+            name: `twitter_video_${resolved.id}.mp4`,
+            isVideo: true,
+            poster: resolved.poster,
+            needsFxFetch: !resolved.videoSrc,
+            tweetId: resolved.id,
+            user: resolved.user,
+            directUrl: resolved.videoSrc || "",
+            url: resolved.videoSrc ? `${PROXY_URL}/proxy?url=${encodeURIComponent(resolved.videoSrc)}` : ""
+          };
+          p.attachments = [];
+          if (resolved.images && resolved.images.length > 0) {
+            resolved.images.forEach((img, i) => {
+              p.attachments.push({ path: img, name: `quote_image_${i}.jpg` });
+            });
           }
+          p._quoteMediaAdopted = true;
+        } else if (resolved.images && resolved.images.length > 0) {
+          p.file = { path: resolved.images[0], name: `quote_image_0.jpg` };
+          p.attachments = [];
+          for (let i = 1; i < resolved.images.length; i++) {
+            p.attachments.push({ path: resolved.images[i], name: `quote_image_${i}.jpg` });
+          }
+          p._quoteMediaAdopted = true;
         }
-      } catch (_) {}
-    }
-  });
-  await Promise.allSettled(quoteHydrations);
+      }
+    } catch (_) {}
+  };
+
+  for (let i = 0; i < targetPosts.length; i += 4) {
+    const chunk = targetPosts.slice(i, i + 4);
+    await Promise.allSettled(chunk.map(resolveOne));
+  }
 }
 
 // Scrape following accounts list with verified Nitter instance, rate-limit cooldown auto-recovery, and deep pagination
@@ -1053,8 +1204,10 @@ export async function fetchTwitterFollowing(username, maxPages = 150, signal = n
   const cleanUser = cleanTwitterHandle(username);
   if (!cleanUser) return [];
 
-  // nitter.mie.foundation is currently the only active verified public host supporting /following scraping
-  const host = "nitter.mie.foundation";
+  // Scraper hosts supporting /following pagination with automatic multi-host fallback
+  const SCRAPER_HOSTS = ["nitter.mie.foundation", "nitter.privacydev.net", "nitter.net"];
+  let hostIndex = 0;
+  let host = SCRAPER_HOSTS[hostIndex];
 
   const allAccounts = [];
   const seenHandles = new Set();
@@ -1082,10 +1235,19 @@ export async function fetchTwitterFollowing(username, maxPages = 150, signal = n
             await new Promise((r) => setTimeout(r, 15000));
             continue;
           }
+          if (text.includes("Rate limit exceeded") || text.includes("rate-limited") || text.includes("error-panel")) {
+            if (typeof onProgress === "function") {
+              onProgress(allAccounts.length, `Rate limit pause (resuming in 16s)... (${allAccounts.length})`);
+            }
+            await new Promise((r) => setTimeout(r, 16000));
+            continue;
+          }
           if (text.includes("timeline-item") || text.includes("profile-result")) {
             pageHtml = text;
             break;
           }
+          // Response was 200 OK but page didn't have timeline items: wait before retrying
+          await new Promise((r) => setTimeout(r, 3000));
         } else if (res.status === 429) {
           // Rate limit reached: pause 16s for the rolling window to reset and auto-resume
           if (typeof onProgress === "function") {
@@ -1096,6 +1258,8 @@ export async function fetchTwitterFollowing(username, maxPages = 150, signal = n
         } else if (res.status === 403 || res.status >= 500) {
           await new Promise((r) => setTimeout(r, 4000 * (attempt + 1)));
           continue;
+        } else {
+          await new Promise((r) => setTimeout(r, 3000));
         }
       } catch (err) {
         if (signal && signal.aborted) throw err;
@@ -1105,9 +1269,11 @@ export async function fetchTwitterFollowing(username, maxPages = 150, signal = n
 
     if (!pageHtml) {
       consecutiveErrors++;
-      if (consecutiveErrors < 3) {
+      hostIndex = (hostIndex + 1) % SCRAPER_HOSTS.length;
+      host = SCRAPER_HOSTS[hostIndex];
+      if (consecutiveErrors < 4) {
         if (typeof onProgress === "function") {
-          onProgress(allAccounts.length, `Retrying page in 8s... (${allAccounts.length})`);
+          onProgress(allAccounts.length, `Retrying with ${host} in 8s... (${allAccounts.length})`);
         }
         await new Promise((r) => setTimeout(r, 8000));
         continue;
@@ -1169,17 +1335,25 @@ export async function fetchTwitterFollowing(username, maxPages = 150, signal = n
       onProgress(allAccounts.length, `Imported ${allAccounts.length} accounts (page ${page + 1})...`);
     }
 
-    // Extract next cursor
-    const showMore = doc.querySelector(".show-more a, .show-more-tweets a");
+    // Extract next cursor using DOMParser with raw HTML regex fallback
+    let nextCursor = null;
+    const showMore = doc.querySelector(".show-more a, .show-more-tweets a, a[href*='cursor=']");
     if (showMore) {
       const href = showMore.getAttribute("href") || "";
-      const m = href.match(/[?&]cursor=([^&]+)/);
-      currentCursor = m ? decodeURIComponent(m[1]) : null;
-    } else {
-      currentCursor = null;
+      const m = href.match(/[?&]cursor=([^&"'>\s]+)/);
+      nextCursor = m ? decodeURIComponent(m[1]) : null;
+    }
+    if (!nextCursor) {
+      const rawCursorMatch = pageHtml.match(/href=[\"']\?[^\"']*cursor=([^\"'>\s&]+)[\"']/i) || pageHtml.match(/[?&]cursor=([^\"'>\s&]+)/i);
+      if (rawCursorMatch) {
+        nextCursor = decodeURIComponent(rawCursorMatch[1]);
+      }
     }
 
-    if (!currentCursor || newOnPage === 0) break;
+    if (!nextCursor || nextCursor === currentCursor) {
+      break;
+    }
+    currentCursor = nextCursor;
     page++;
 
     // Polite delay between pages (2.6s) to stay within rate limits
@@ -1196,15 +1370,28 @@ export function getSavedTwitterFollowing() {
     if (!raw) return [];
     const list = JSON.parse(raw);
     if (!Array.isArray(list)) return [];
-    // Filter out invalid corrupt handles (e.g. handles with spaces or special characters)
-    const validList = list.filter((acc) => {
+    const validList = [];
+    const seen = new Set();
+    list.forEach((acc, idx) => {
+      if (!acc) return;
       const h = cleanTwitterHandle(acc.handle || acc.id);
-      return isValidTwitterHandle(h);
+      if (isValidTwitterHandle(h)) {
+        const lower = h.toLowerCase();
+        if (!seen.has(lower)) {
+          seen.add(lower);
+          const displayHandle = formatTwitterHandle(h);
+          validList.push({
+            id: h,
+            handle: h,
+            name: acc.name || displayHandle,
+            username: displayHandle,
+            avatar: acc.avatar || "",
+            service: "twitter",
+            followedAt: acc.followedAt || (Date.now() - idx * 1000)
+          });
+        }
+      }
     });
-    // Auto-repair localStorage if invalid entries were present
-    if (validList.length !== list.length && typeof localStorage !== "undefined") {
-      localStorage.setItem("paw_twitter_following", JSON.stringify(validList));
-    }
     return validList;
   } catch (_) {
     return [];
@@ -1300,38 +1487,38 @@ export function saveTwitterFollowing(list, options = {}) {
     if (Array.isArray(list) && typeof localStorage !== "undefined") {
       const existing = merge ? getSavedTwitterFollowing() : [];
       const seen = new Set();
-      const merged = [];
+      const compactList = [];
 
-      list.forEach((acc) => {
+      function addAccount(acc) {
+        if (!acc) return;
         const h = cleanTwitterHandle(acc.handle || acc.id);
-        if (h && isValidTwitterHandle(h) && !seen.has(h)) {
-          seen.add(h);
-          merged.push({
-            ...acc,
-            id: h,
-            handle: h
-          });
-        }
-      });
-
-      if (merge && existing.length > 0) {
-        existing.forEach((acc) => {
-          const h = cleanTwitterHandle(acc.handle || acc.id);
-          if (h && isValidTwitterHandle(h) && !seen.has(h)) {
-            seen.add(h);
-            merged.push({
-              ...acc,
-              id: h,
-              handle: h
-            });
+        if (h && isValidTwitterHandle(h)) {
+          const lower = h.toLowerCase();
+          if (!seen.has(lower)) {
+            seen.add(lower);
+            const name = (acc.name || "").trim();
+            const avatar = acc.avatar ? cleanTwitterMediaUrl(acc.avatar) : "";
+            const followedAt = typeof acc.followedAt === "number" ? acc.followedAt : Date.now();
+            const item = { handle: h };
+            if (name && name !== h && name !== `@${h}`) item.name = name;
+            if (avatar) item.avatar = avatar;
+            if (followedAt) item.followedAt = followedAt;
+            compactList.push(item);
           }
-        });
+        }
       }
 
-      localStorage.setItem("paw_twitter_following", JSON.stringify(merged));
-      return merged;
+      list.forEach(addAccount);
+      if (merge && existing.length > 0) {
+        existing.forEach(addAccount);
+      }
+
+      localStorage.setItem("paw_twitter_following", JSON.stringify(compactList));
+      return getSavedTwitterFollowing();
     }
-  } catch (_) {}
+  } catch (err) {
+    console.error("saveTwitterFollowing error:", err);
+  }
   return [];
 }
 
@@ -1344,25 +1531,7 @@ export function clearTwitterFollowing() {
   } catch (_) {}
 }
 
-export function updateTwitterCreatorFollowers(handle, count) {
-  try {
-    if (!handle || typeof count !== "number" || typeof localStorage === "undefined") return;
-    const clean = cleanTwitterHandle(handle);
-    if (!clean || !isValidTwitterHandle(clean)) return;
-    twitterFollowerCache.set(clean, count);
-    const existing = getSavedTwitterFollowing();
-    let updated = false;
-    existing.forEach((acc) => {
-      if (cleanTwitterHandle(acc.handle || acc.id) === clean) {
-        acc.followers = count;
-        updated = true;
-      }
-    });
-    if (updated) {
-      localStorage.setItem("paw_twitter_following", JSON.stringify(existing));
-    }
-  } catch (_) {}
-}
+
 
 // State for Following Feed chronological pooling and cursor management
 let followingFeedPool = [];
@@ -1444,6 +1613,14 @@ export async function fetchTwitterFollowingFeed(cursor = 0, signal = null, feedT
               return;
             }
             if (!followingFeedSeenIds.has(pId)) {
+              const hideReplies = typeof window !== "undefined" && window.pawTwitterHideReplies !== undefined
+                ? window.pawTwitterHideReplies
+                : (typeof localStorage !== "undefined" && localStorage.getItem("paw_twitter_hide_replies") === "true");
+
+              if (hideReplies && post.isReply && !post.isSelfReply) {
+                return;
+              }
+
               // Also ensure it is not an empty dummy post
               const textContent = (post.content || post.title || "").replace(/<[^>]*>/g, "").trim();
               const hasMedia = Boolean(post.file || (post.attachments && post.attachments.length > 0) || post.isVideo);
